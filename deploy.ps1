@@ -7,6 +7,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $target = Join-Path $Vencord "src\userplugins\venVisual"
+# Start from a clean folder so files removed from src (e.g. old css.ts) do not survive.
+if (Test-Path $target) { Remove-Item -Recurse -Force $target }
 New-Item -ItemType Directory -Force $target | Out-Null
 Copy-Item (Join-Path $PSScriptRoot "src\*") $target -Recurse -Force
 

@@ -4,223 +4,149 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
-import definePlugin, { OptionType, StartAt } from "@utils/types";
+import definePlugin, { StartAt } from "@utils/types";
 
-import { buildCss, normalizeHex, VVSettings } from "./css";
-import { THEMES } from "./themes";
+import { buildCss } from "./build";
+import { DEFAULTS, FEATURE_BY_ID, FEATURES, withDefaults } from "./features/index";
+import { isPaused, onMessageCreate, startRuntime, stopRuntime, updateRuntime } from "./fx/runtime";
+import { Values } from "./registry";
+import { getValues, saveAll, setApplyHandler, settings } from "./settings";
 
 const STYLE_ID = "vc-venvisual";
 let styleEl: HTMLStyleElement | null = null;
 
-function applyStyles() {
-    if (!styleEl) return;
-    styleEl.textContent = buildCss(settings.store as unknown as VVSettings);
+function apply(v: Values) {
+    const paused = isPaused();
+    if (styleEl) {
+        try {
+            styleEl.textContent = buildCss(v, paused);
+        } catch (e) {
+            console.error("[VenVisual] buildCss failed:", e);
+        }
+    }
+    try {
+        updateRuntime(v, paused);
+    } catch (e) {
+        console.error("[VenVisual] runtime update failed:", e);
+    }
 }
 
-const live = { onChange: applyStyles };
-const isHexOrEmpty = (v: string) => !v?.trim() || normalizeHex(v) !== null || "Нужен HEX цвет, например #ff2bd6";
+/* ---------- migration from the old flat settings (v1) ---------- */
 
-export const settings = definePluginSettings({
-    /* ---------- theme ---------- */
-    theme: {
-        type: OptionType.SELECT,
-        description: "Тема",
-        options: [
-            { label: "Discord (без изменений)", value: "none", default: true },
-            ...Object.entries(THEMES).map(([value, t]) => ({ label: t.label, value }))
-        ],
-        ...live
-    },
-    customAccent: {
-        type: OptionType.STRING,
-        description: "Свой акцентный цвет (HEX, пусто = из темы)",
-        placeholder: "#ff2bd6",
-        default: "",
-        isValid: isHexOrEmpty,
-        ...live
-    },
-    customAccent2: {
-        type: OptionType.STRING,
-        description: "Второй акцент для градиентов (HEX, пусто = из темы)",
-        placeholder: "#00e5ff",
-        default: "",
-        isValid: isHexOrEmpty,
-        ...live
-    },
-    customBackground: {
-        type: OptionType.STRING,
-        description: "Свой цвет фона (HEX, пусто = из темы)",
-        placeholder: "#151926",
-        default: "",
-        isValid: isHexOrEmpty,
-        ...live
-    },
-    customText: {
-        type: OptionType.STRING,
-        description: "Свой цвет текста (HEX, пусто = из темы)",
-        placeholder: "#dfe3f0",
-        default: "",
-        isValid: isHexOrEmpty,
-        ...live
-    },
+/** [old key, new feature id, old default]. Values equal to the old default were never chosen by the user and are skipped */
+const OLD_KEYS: [string, string, unknown][] = [
+    ["theme", "theme", "none"],
+    ["customAccent", "accent", ""],
+    ["customAccent2", "accent2", ""],
+    ["customBackground", "bgColor", ""],
+    ["customText", "textColor", ""],
+    ["hoverEnabled", "hoverEnabled", true],
+    ["hoverChannels", "hoverChannels", true],
+    ["hoverDMs", "hoverDMs", true],
+    ["hoverMembers", "hoverMembers", true],
+    ["hoverServers", "hoverServers", true],
+    ["hoverMessages", "msgHover", false],
+    ["highlightSelected", "highlightSelected", true],
+    ["hoverShift", "hoverShift", 6],
+    ["hoverGlow", "hoverGlow", 12],
+    ["bgImage", "bgImage", ""],
+    ["bgBlur", "bgBlur", 4],
+    ["bgDim", "bgDim", 40],
+    ["panelOpacity", "panelOpacity", 70],
+    ["glassPanels", "glassPanels", false],
+    ["radius", "radius", 8],
+    ["fontFamily", "fontFamily", ""],
+    ["fontScale", "msgFontScale", 100],
+    ["messageSpacing", "msgSpacing", 17],
+    ["nameStyle", "nameStyle", "none"],
+    ["animations", "msgAppear", true],
+    ["animationSpeed", "animSpeed", 200]
+];
 
-    /* ---------- hover highlight ---------- */
-    hoverEnabled: {
-        type: OptionType.BOOLEAN,
-        description: "Подсветка при наведении (элемент светится и отъезжает в сторону)",
-        default: true,
-        ...live
-    },
-    hoverChannels: { type: OptionType.BOOLEAN, description: "— каналы сервера", default: true, ...live },
-    hoverDMs: { type: OptionType.BOOLEAN, description: "— личные сообщения", default: true, ...live },
-    hoverMembers: { type: OptionType.BOOLEAN, description: "— список участников", default: true, ...live },
-    hoverServers: { type: OptionType.BOOLEAN, description: "— иконки серверов", default: true, ...live },
-    hoverMessages: { type: OptionType.BOOLEAN, description: "— сообщения в чате (только подсветка)", default: false, ...live },
-    highlightSelected: {
-        type: OptionType.BOOLEAN,
-        description: "Выделять открытый канал/ЛС градиентом",
-        default: true,
-        ...live
-    },
-    hoverShift: {
-        type: OptionType.SLIDER,
-        description: "Насколько отъезжает при наведении (px)",
-        markers: [0, 2, 4, 6, 8, 10, 12, 16],
-        default: 6,
-        stickToMarkers: false,
-        ...live
-    },
-    hoverGlow: {
-        type: OptionType.SLIDER,
-        description: "Сила свечения (px)",
-        markers: [0, 4, 8, 12, 16, 24],
-        default: 12,
-        stickToMarkers: false,
-        ...live
-    },
+function migrateOldSettings() {
+    try {
+        const plain = settings.plain as Record<string, any> | undefined;
+        if (!plain) return;
 
-    /* ---------- background ---------- */
-    bgImage: {
-        type: OptionType.STRING,
-        description: "Фоновая картинка (прямая ссылка на изображение, пусто = выкл)",
-        placeholder: "https://i.imgur.com/....jpg",
-        default: "",
-        ...live
-    },
-    bgBlur: {
-        type: OptionType.SLIDER,
-        description: "Размытие фона (px)",
-        markers: [0, 2, 4, 8, 12, 16, 24],
-        default: 4,
-        stickToMarkers: false,
-        ...live
-    },
-    bgDim: {
-        type: OptionType.SLIDER,
-        description: "Затемнение фона (%)",
-        markers: [0, 20, 40, 60, 80],
-        default: 40,
-        stickToMarkers: false,
-        ...live
-    },
-    panelOpacity: {
-        type: OptionType.SLIDER,
-        description: "Непрозрачность панелей поверх фона (%)",
-        markers: [0, 20, 40, 60, 80, 100],
-        default: 70,
-        stickToMarkers: false,
-        ...live
-    },
-    glassPanels: {
-        type: OptionType.BOOLEAN,
-        description: "Эффект стекла (размытие под панелями, чуть тяжелее для ПК)",
-        default: false,
-        ...live
-    },
+        const present = OLD_KEYS.filter(([oldKey]) => plain[oldKey] !== undefined);
+        if (!present.length) return;
 
-    /* ---------- shape & typography ---------- */
-    radius: {
-        type: OptionType.SLIDER,
-        description: "Скругление углов (px)",
-        markers: [0, 4, 8, 12, 16, 20, 24],
-        default: 8,
-        stickToMarkers: false,
-        ...live
-    },
-    fontFamily: {
-        type: OptionType.STRING,
-        description: "Шрифт (название установленного шрифта, пусто = стандартный)",
-        placeholder: "Inter",
-        default: "",
-        ...live
-    },
-    fontScale: {
-        type: OptionType.SLIDER,
-        description: "Размер текста сообщений (%)",
-        markers: [80, 90, 100, 110, 120, 130],
-        default: 100,
-        stickToMarkers: false,
-        ...live
-    },
-    messageSpacing: {
-        type: OptionType.SLIDER,
-        description: "Отступ между группами сообщений (px)",
-        markers: [0, 4, 8, 12, 17, 24, 32],
-        default: 17,
-        stickToMarkers: false,
-        ...live
-    },
+        const current = plain.values;
+        const valuesEmpty = !current || typeof current !== "object" || Object.keys(current).length === 0;
 
-    /* ---------- animations ---------- */
-    animations: {
-        type: OptionType.BOOLEAN,
-        description: "Анимации (появление сообщений, меню, плавные переходы)",
-        default: true,
-        ...live
-    },
-    animationSpeed: {
-        type: OptionType.SLIDER,
-        description: "Длительность анимаций (мс)",
-        markers: [80, 150, 200, 300, 400, 600],
-        default: 200,
-        stickToMarkers: false,
-        ...live
-    },
+        const migrated: Values = {};
+        if (valuesEmpty) {
+            for (const [oldKey, newKey, oldDefault] of present) {
+                const val = plain[oldKey];
+                if (val === oldDefault) continue;
 
-    /* ---------- usernames ---------- */
-    nameStyle: {
-        type: OptionType.SELECT,
-        description: "Стиль ников в чате",
-        options: [
-            { label: "Обычные", value: "none", default: true },
-            { label: "Градиент из акцентов темы", value: "accent" },
-            { label: "Переливающаяся радуга", value: "rainbow" },
-            { label: "Блик по цвету роли", value: "roleShine" },
-            { label: "Свечение цвета роли", value: "glow" }
-        ],
-        ...live
+                switch (oldKey) {
+                    case "hoverServers":
+                        migrated.hoverServers = typeof val === "boolean" ? (val ? "lift" : "off") : val;
+                        break;
+                    case "animations":
+                        if (val === false) migrated.msgAppear = "off";
+                        break;
+                    case "bgImage":
+                        if (typeof val === "string" && val.trim()) {
+                            migrated.bgImage = val;
+                            migrated.bgMode = "image";
+                        }
+                        break;
+                    default:
+                        migrated[newKey] = val;
+                }
+            }
+        }
+
+        // the old sliders stored fractional numbers and old select values may no longer exist
+        for (const [id, val] of Object.entries(migrated)) {
+            const f = FEATURE_BY_ID.get(id);
+            if (!f) delete migrated[id];
+            else if (f.kind === "slider" && typeof val === "number") {
+                const step = f.step ?? 1;
+                migrated[id] = Math.min(f.max, Math.max(f.min, Math.round(val / step) * step));
+            } else if (f.kind === "select" && !f.options.some(o => o.value === val)) delete migrated[id];
+        }
+
+        const store = settings.store as Record<string, any>;
+        for (const [oldKey] of present) delete store[oldKey];
+
+        if (valuesEmpty && Object.keys(migrated).length) saveAll(migrated);
+    } catch (e) {
+        console.error("[VenVisual] settings migration failed:", e);
     }
-});
+}
 
 export default definePlugin({
     name: "VenVisual",
-    description: "Темы, подсветка каналов при наведении, фон с размытием, скругления, шрифты, анимации и градиентные ники.",
+    description: "Больше 100 визуальных настроек: темы, подсветка, фон, частицы, эффекты курсора, стили ников и сообщений, виджеты. Всё настраивается в удобной панели.",
     authors: [{ name: "MatyanKass", id: 0n }],
     tags: ["Appearance", "Customisation"],
     settings,
 
     startAt: StartAt.DOMContentLoaded,
 
+    flux: {
+        MESSAGE_CREATE: onMessageCreate
+    },
+
     start() {
         styleEl ??= createAndAppendStyle(STYLE_ID, managedStyleRootNode);
-        applyStyles();
+        migrateOldSettings();
+        setApplyHandler(apply);
+        startRuntime({ getValues, rebuild: () => apply(getValues()) });
+        apply(getValues());
     },
 
     stop() {
+        stopRuntime();
         styleEl?.remove();
         styleEl = null;
-    }
+        setApplyHandler(null);
+    },
+
+    debug: { buildCss, FEATURES, DEFAULTS, withDefaults, getValues }
 });
