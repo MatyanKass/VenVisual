@@ -9,6 +9,8 @@
 // one drew into, and the frame cap / resolution adapt when drawing gets expensive.
 // Everything is drawn on one fixed front canvas; only when particles are on the "back" layer they get a second
 // canvas behind the interface. The rAF loop only runs while something animates.
+// Depth: every ambient particle carries a z in [0,1] that scales its size / speed / alpha and picks one of the
+// pre-blurred sprite variants; nothing is blurred per frame. The engine never reads layout.
 
 export interface FxConfig {
     particles: string;
@@ -19,12 +21,39 @@ export interface FxConfig {
     wind: number;
     mouseRepel: boolean;
     layer: "front" | "back";
+    /** particles get a depth z: back layers smaller / slower / dimmer / blurred, front ones bigger and sharper */
+    depth: boolean;
+    /** how strongly the depth changes size, speed and dimming (0..100) */
+    depthAmount: number;
+    /** rotation / tumble speed in percent (100 = as before) */
+    spin: number;
     trail: string;
     trailLength: number;
+    /** "accent" = same palette as the other effects, "custom" = trailColor1, "rainbow" */
+    trailColors: string;
+    trailColor1: string;
+    trailWidth: number;
+    /** how fast the trail melts away, percent (60 = as before) */
+    trailFade: number;
     ring: boolean;
+    ringSize: number;
+    ringWidth: number;
+    /** "" = take the color from the palette */
+    ringColor: string;
+    /** how far the ring lags behind the cursor (18 = as before) */
+    ringLag: number;
     click: string;
     clickIntensity: number;
+    /** "" = take the color from the palette */
+    clickColor: string;
+    /** particles per click (18 = as before) */
+    clickCount: number;
+    /** size of the "message sent" burst, percent */
+    sendSize: number;
     colors: string;
+    /** used when colors === "custom" */
+    color1: string;
+    color2: string;
     pauseUnfocused: boolean;
     /** frame cap: 0 = unlimited, 30 / 60 = fixed, "auto" (or a negative number) = adaptive */
     fps: number | "auto";
@@ -58,6 +87,8 @@ interface Amb {
     life: number; max: number;
     /** per particle alpha / misc factor */
     a: number;
+    /** depth 0 (far back) .. 1 (front); the array is kept sorted by it so the front layers draw last */
+    z: number;
 }
 
 interface Column {
@@ -120,10 +151,13 @@ const TRAIL_KINDS = new Set(["dots", "sparkles", "rainbow", "comet", "bubbles", 
 const LINE_TRAILS = new Set(["dots", "rainbow", "comet"]);
 const CLICK_KINDS = new Set(["ripple", "burst", "stars", "hearts", "confetti"]);
 const BURST_KINDS = new Set<string>(["confetti", "fireworks", "hearts", "stars", "sparks"]);
-const COLOR_MODES = new Set(["accent", "rainbow", "white", "natural"]);
+const COLOR_MODES = new Set(["accent", "rainbow", "white", "natural", "custom"]);
+const TRAIL_COLOR_MODES = new Set(["accent", "custom", "rainbow"]);
 const QUALITIES = new Set<string>(["auto", "high", "medium", "low"]);
 const FALLING = new Set(["snow", "sakura", "leaves", "rain", "confetti"]);
 const RISING = new Set(["bubbles", "hearts", "embers"]);
+/** blur radii (px, on the 64px sprite) of the pre-rendered depth variants */
+const BLUR_STEPS = [0.9, 2.1];
 
 const SPRITE_OF: Record<string, string> = {
     snow: "soft",
@@ -368,17 +402,31 @@ function renderSprite(shape: string, col: Col): HTMLCanvasElement {
     return cv;
 }
 
-/** Small LRU of pre-rendered sprites keyed by shape + color. */
+/** Pre-renders a blurred copy of a sprite once, so the depth layers never need a per-frame filter. */
+function blurSprite(src: HTMLCanvasElement, radius: number): HTMLCanvasElement {
+    const cv = document.createElement("canvas");
+    cv.width = src.width;
+    cv.height = src.height;
+    const x = cv.getContext("2d");
+    if (!x) return cv;
+    x.filter = `blur(${radius}px)`;
+    x.drawImage(src, 0, 0);
+    return cv;
+}
+
+/** Small LRU of pre-rendered sprites keyed by shape + blur level + color. */
 class SpriteCache {
     private shapes = new Map<string, Map<string, { cv: HTMLCanvasElement; used: number; }>>();
     private count = 0;
     private tick = 0;
 
-    get(shape: string, col: Col): HTMLCanvasElement {
-        let byColor = this.shapes.get(shape);
+    /** blur: 0 = sharp, 1 / 2 = the pre-blurred depth variants */
+    get(shape: string, col: Col, blur = 0): HTMLCanvasElement {
+        const key = blur > 0 ? `${shape}~${blur}` : shape;
+        let byColor = this.shapes.get(key);
         if (!byColor) {
             byColor = new Map();
-            this.shapes.set(shape, byColor);
+            this.shapes.set(key, byColor);
         }
         const hit = byColor.get(col.css);
         if (hit) {
@@ -386,7 +434,9 @@ class SpriteCache {
             return hit.cv;
         }
         if (this.count >= MAX_SPRITES) this.evict();
-        const cv = renderSprite(shape, col);
+        const cv = blur > 0
+            ? blurSprite(this.get(shape, col), BLUR_STEPS[Math.min(blur, BLUR_STEPS.length) - 1])
+            : renderSprite(shape, col);
         byColor.set(col.css, { cv, used: ++this.tick });
         this.count++;
         return cv;
@@ -512,12 +562,28 @@ function normalize(c: FxConfig): FxConfig {
         wind: num(c.wind, 0, -100, 100),
         mouseRepel: !!c.mouseRepel,
         layer: c.layer === "back" ? "back" : "front",
+        depth: !!c.depth,
+        depthAmount: num(c.depthAmount, 60, 0, 100),
+        spin: num(c.spin, 100, 0, 200),
         trail: TRAIL_KINDS.has(c.trail) ? c.trail : "none",
         trailLength: num(c.trailLength, 20, 5, 60),
+        trailColors: TRAIL_COLOR_MODES.has(c.trailColors) ? c.trailColors : "accent",
+        trailColor1: String(c.trailColor1 ?? ""),
+        trailWidth: num(c.trailWidth, 4, 1, 12),
+        trailFade: num(c.trailFade, 60, 10, 100),
         ring: !!c.ring,
+        ringSize: num(c.ringSize, 16, 6, 48),
+        ringWidth: num(c.ringWidth, 2, 1, 6),
+        ringColor: String(c.ringColor ?? ""),
+        ringLag: num(c.ringLag, 18, 5, 60),
         click: CLICK_KINDS.has(c.click) ? c.click : "none",
         clickIntensity: num(c.clickIntensity, 100, 30, 300),
+        clickColor: String(c.clickColor ?? ""),
+        clickCount: Math.round(num(c.clickCount, 18, 4, 60)),
+        sendSize: num(c.sendSize, 100, 30, 300),
         colors: COLOR_MODES.has(c.colors) ? c.colors : "accent",
+        color1: String(c.color1 ?? ""),
+        color2: String(c.color2 ?? ""),
         pauseUnfocused: !!c.pauseUnfocused,
         fps: normFps(c.fps),
         quality: QUALITIES.has(c.quality) ? c.quality : "auto",
@@ -578,6 +644,9 @@ export class FxEngine {
     private kind = "none";
     private amb: Amb[] = [];
     private cols: Column[] = [];
+
+    /** eased horizontal parallax offset of the front depth layer (CSS px) */
+    private para = 0;
     private bursts: Bp[] = [];
     private trail: TrailPoint[] = [];
     private trailSeq = 0;
@@ -613,7 +682,9 @@ export class FxEngine {
         this.backTrk.invalidate();
 
         const accentChanged = this.applyAccent(next.accent, next.accent2);
-        if (!prev || prev.colors !== next.colors || accentChanged) this.palettes.clear();
+        if (!prev || accentChanged || prev.colors !== next.colors || prev.color1 !== next.color1 || prev.color2 !== next.color2
+            || prev.trailColors !== next.trailColors || prev.trailColor1 !== next.trailColor1
+            || prev.ringColor !== next.ringColor || prev.clickColor !== next.clickColor) this.palettes.clear();
 
         if (!prev || prev.particles !== next.particles) {
             this.kind = next.particles;
@@ -669,7 +740,9 @@ export class FxEngine {
         const { cfg } = this;
         if (!cfg || document.hidden || !BURST_KINDS.has(kind)) return;
         if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-        const s = clamp(Number(intensity) || 1, 0.1, 5);
+        // "sparks" is the typing effect and keeps its own scale; the message-send burst follows sendSize
+        const user = kind === "sparks" ? 1 : cfg.sendSize / 100;
+        const s = clamp((Number(intensity) || 1) * user, 0.1, 5);
         if (!this.ensureCanvas()) return;
 
         switch (kind) {
@@ -848,6 +921,8 @@ export class FxEngine {
         cv.setAttribute("aria-hidden", "true");
         const ctx = cv.getContext("2d");
         if (!ctx) return false;
+        // handle for the perf tooling: document.getElementById("vv-fx").__fx.getStats()
+        (cv as any).__fx = this;
         this.canvas = cv;
         this.ctx = ctx;
         this.placeCanvas();
@@ -944,7 +1019,9 @@ export class FxEngine {
 
     private bindInput() {
         const { cfg } = this;
-        const wantMove = !!cfg && (cfg.trail !== "none" || cfg.ring || (cfg.mouseRepel && cfg.particles !== "none"));
+        const particlesOn = !!cfg && cfg.particles !== "none";
+        const wantMove = !!cfg && (cfg.trail !== "none" || cfg.ring
+            || (particlesOn && (cfg.mouseRepel || (cfg.depth && cfg.depthAmount > 0))));
         if (wantMove !== this.moveBound) {
             if (wantMove) {
                 window.addEventListener("pointermove", this.onMove, { passive: true });
@@ -1194,13 +1271,25 @@ export class FxEngine {
     private pal(group: string): Col[] {
         let p = this.palettes.get(group);
         if (p) return p;
-        const mode = this.cfg?.colors ?? "accent";
+        const { cfg } = this;
+        const mode = cfg?.colors ?? "accent";
         if (group.endsWith("Light")) {
             p = this.pal(group.slice(0, -5)).map(c => mix(c, WHITE, 0.65));
+        } else if (group === "trail" && cfg && cfg.trailColors !== "accent") {
+            p = cfg.trailColors === "rainbow" ? RAINBOW : [quantCol(toCol(cfg.trailColor1, this.accent))];
+        } else if (group === "ring" && cfg?.ringColor) {
+            p = [quantCol(toCol(cfg.ringColor, this.accent))];
+        } else if (group === "click" && cfg?.clickColor) {
+            p = [quantCol(toCol(cfg.clickColor, this.accent))];
         } else if (mode === "rainbow") {
             p = RAINBOW;
         } else if (mode === "white") {
             p = WHITES;
+        } else if (mode === "custom" && cfg) {
+            const c1 = quantCol(toCol(cfg.color1, this.accent));
+            const c2 = quantCol(toCol(cfg.color2, this.accent2));
+            p = [c1, c2, mix(c1, c2, 0.5)];
+            if (group === "confetti" || group === "firework") p.push(mix(c1, WHITE, 0.45), mix(c2, WHITE, 0.45));
         } else if (mode === "natural" && NATURAL[group]) {
             p = NATURAL[group];
         } else {
@@ -1211,15 +1300,15 @@ export class FxEngine {
         return p;
     }
 
-    /** Draws an image centered at x,y (CSS px) with optional rotation and vertical flip scale. */
-    private put(ctx: CanvasRenderingContext2D, img: CanvasImageSource, x: number, y: number, w: number, h: number, rot: number, sy: number) {
+    /** Draws an image centered at x,y (CSS px) with optional rotation and flip scales (sy vertical, sx horizontal). */
+    private put(ctx: CanvasRenderingContext2D, img: CanvasImageSource, x: number, y: number, w: number, h: number, rot: number, sy: number, sx = 1) {
         const d = this.scale;
-        if (rot === 0 && sy === 1) {
+        if (rot === 0 && sy === 1 && sx === 1) {
             ctx.setTransform(d, 0, 0, d, x * d, y * d);
         } else {
             const c = Math.cos(rot) * d;
             const s = Math.sin(rot) * d;
-            ctx.setTransform(c, s, -s * sy, c * sy, x * d, y * d);
+            ctx.setTransform(c * sx, s * sx, -s * sy, c * sy, x * d, y * d);
         }
         ctx.drawImage(img, -w / 2, -h / 2, w, h);
         const { trk } = this;
@@ -1261,6 +1350,31 @@ export class FxEngine {
         return p;
     }
 
+    /* ------------------------------------------------------------ depth */
+
+    /** how strongly depth is applied, 0 = not at all */
+    private depthK(cfg: FxConfig): number {
+        return cfg.depth ? cfg.depthAmount / 100 : 0;
+    }
+
+    private sizeF(z: number, k: number): number {
+        return 1 + (z - 0.5) * 0.8 * k;
+    }
+
+    private speedF(z: number, k: number): number {
+        return 1 + (z - 0.5) * 0.7 * k;
+    }
+
+    private dimF(z: number, k: number): number {
+        return 1 - (1 - z) * 0.55 * k;
+    }
+
+    /** which pre-blurred sprite variant a depth belongs to (0 = sharp) */
+    private blurF(z: number, k: number): number {
+        if (k < 0.3) return 0;
+        return z < 0.3 ? 2 : z < 0.62 ? 1 : 0;
+    }
+
     /* ----------------------------------------------------------- ambient */
 
     private syncAmbient() {
@@ -1289,6 +1403,9 @@ export class FxEngine {
         }
         while (this.amb.length < cfg.count) this.amb.push(this.spawn(true));
         this.amb.length = cfg.count;
+        // one depth per slot, ascending: the array stays sorted by z forever, so the front layers draw last
+        const n = this.amb.length;
+        for (let i = 0; i < n; i++) this.amb[i].z = (i + 0.5) / n;
     }
 
     private spawn(initial: boolean): Amb {
@@ -1298,7 +1415,8 @@ export class FxEngine {
             y: initial ? Math.random() * h : -20,
             vx: 0, vy: 0, size: 1,
             rot: Math.random() * TAU, vr: 0, phase: Math.random() * TAU,
-            c: Math.random(), life: 0, max: 1, a: 1
+            c: Math.random(), life: 0, max: 1, a: 1,
+            z: 0.5
         };
         switch (this.kind) {
             case "snow":
@@ -1387,16 +1505,28 @@ export class FxEngine {
         }
         const wind = cfg.wind / 100;
         const t = this.time;
-        const s = sp * dt;
+        const base = sp * dt;
         const { w, h, mx, my } = this;
         const m = 30 * (cfg.size / 100) + 20;
         const repel = cfg.mouseRepel && this.mouseActive;
         const falling = FALLING.has(kind);
         const rising = RISING.has(kind);
         const arr = this.amb;
+        const k = this.depthK(cfg);
+        const spin = cfg.spin / 100;
+
+        // horizontal parallax: eased here so the draw pass only reads it, front layers shift more
+        if (k > 0) {
+            const target = this.mouseActive ? (mx / w - 0.5) * -26 * k : 0;
+            this.para += (target - this.para) * (1 - Math.pow(0.88, dt));
+        } else if (this.para !== 0) {
+            this.para = 0;
+        }
 
         for (let i = 0; i < arr.length; i++) {
             let p = arr[i];
+            const s = k > 0 ? base * this.speedF(p.z, k) : base;
+
             switch (kind) {
                 case "snow":
                     p.x += (p.vx + Math.sin(t * 0.02 + p.phase) * 0.45 + wind * 1.8) * s;
@@ -1405,12 +1535,12 @@ export class FxEngine {
                 case "sakura":
                     p.x += (p.vx + Math.sin(t * 0.016 + p.phase) * 0.7 + wind * 2.2) * s;
                     p.y += p.vy * s;
-                    p.rot += p.vr * s;
+                    p.rot += p.vr * spin * s;
                     break;
                 case "leaves":
                     p.x += (p.vx + Math.sin(t * 0.012 + p.phase) * 1.1 + wind * 2.4) * s;
                     p.y += (p.vy + Math.cos(t * 0.02 + p.phase) * 0.25) * s;
-                    p.rot += (p.vr + Math.sin(t * 0.01 + p.phase) * 0.02) * s;
+                    p.rot += (p.vr + Math.sin(t * 0.01 + p.phase) * 0.02) * spin * s;
                     break;
                 case "rain":
                     p.rot = p.vx + wind * 5;
@@ -1446,14 +1576,16 @@ export class FxEngine {
                     p.x += (p.vx + Math.sin(t * 0.05 + p.phase) * 0.35 + wind * 1.5) * s;
                     p.y += p.vy * s;
                     if (p.life <= 0) {
+                        const { z } = p;
                         p = this.spawn(false);
+                        p.z = z;
                         arr[i] = p;
                     }
                     break;
                 case "confetti":
                     p.x += (p.vx + Math.sin(t * 0.03 + p.phase) * 0.6 + wind * 2) * s;
                     p.y += p.vy * s;
-                    p.rot += p.vr * s;
+                    p.rot += p.vr * spin * s;
                     break;
             }
 
@@ -1482,7 +1614,9 @@ export class FxEngine {
             } else if (p.y < -m) {
                 if (rising) {
                     if (kind === "embers") {
+                        const { z } = p;
                         p = this.spawn(false);
+                        p.z = z;
                         arr[i] = p;
                     } else {
                         p.y = h + m * 0.9;
@@ -1535,29 +1669,35 @@ export class FxEngine {
             return;
         }
 
+        const k = this.depthK(cfg);
+        const spin = cfg.spin / 100;
+        const { para } = this;
+
         if (kind === "confetti") {
-            ctx.globalAlpha = op;
             for (const p of arr) {
                 const flip = Math.cos(t * p.a + p.phase);
                 const c = Math.cos(p.rot) * d;
                 const sn = Math.sin(p.rot) * d;
-                ctx.setTransform(c, sn, -sn * flip, c * flip, p.x * d, p.y * d);
+                const px = k > 0 ? p.x + para * (0.3 + 0.7 * p.z) : p.x;
+                ctx.globalAlpha = k > 0 ? Math.min(1, op * this.dimF(p.z, k)) : op;
+                ctx.setTransform(c, sn, -sn * flip, c * flip, px * d, p.y * d);
                 ctx.fillStyle = pal[(p.c * pn) | 0].css;
-                const rw = p.size * sz;
+                const rw = p.size * sz * (k > 0 ? this.sizeF(p.z, k) : 1);
                 const rh = rw * 0.6;
                 ctx.fillRect(-rw / 2, -rh / 2, rw, rh);
-                this.markBox(p.x, p.y, rw * 0.6 + RECT_PAD, rw * 0.6 + RECT_PAD);
+                this.markBox(px, p.y, rw * 0.6 + RECT_PAD, rw * 0.6 + RECT_PAD);
             }
             return;
         }
 
         const shape = SPRITE_OF[kind] ?? "glow";
         for (const p of arr) {
-            const img = this.sprites.get(shape, pal[(p.c * pn) | 0]);
+            const img = this.sprites.get(shape, pal[(p.c * pn) | 0], k > 0 ? this.blurF(p.z, k) : 0);
             let size = p.size * sz;
             let alpha = op * p.a;
             let rot = 0;
             let sy = 1;
+            let sx = 1;
             switch (kind) {
                 case "snow":
                     size *= 2.4;
@@ -1566,8 +1706,14 @@ export class FxEngine {
                 case "leaves": {
                     size *= 2.2;
                     rot = p.rot;
-                    const f = Math.sin(t * 0.03 + p.phase);
-                    sy = f < 0 ? Math.min(f, -0.2) : Math.max(f, 0.2);
+                    if (k > 0) {
+                        // tumbling: squashing the sprite horizontally (and through zero) reads as turning over
+                        const f = Math.cos(t * 0.03 * spin + p.phase);
+                        sx = f < 0 ? Math.min(f, -0.15) : Math.max(f, 0.15);
+                    } else {
+                        const f = Math.sin(t * 0.03 + p.phase);
+                        sy = f < 0 ? Math.min(f, -0.2) : Math.max(f, 0.2);
+                    }
                     break;
                 }
                 case "stars": {
@@ -1600,9 +1746,15 @@ export class FxEngine {
                     alpha *= 0.5 + 0.5 * Math.sin(t * 0.02 + p.phase);
                     break;
             }
+            let px = p.x;
+            if (k > 0) {
+                size *= this.sizeF(p.z, k);
+                alpha *= this.dimF(p.z, k);
+                px += para * (0.3 + 0.7 * p.z);
+            }
             if (alpha <= 0.01) continue;
             ctx.globalAlpha = alpha > 1 ? 1 : alpha;
-            this.put(ctx, img, p.x, p.y, size, size, rot, sy);
+            this.put(ctx, img, px, p.y, size, size, rot, sy, sx);
         }
     }
 
@@ -1668,8 +1820,13 @@ export class FxEngine {
 
     /* ------------------------------------------------------------- trail */
 
+    /** 60 (the default) keeps the original timing; higher melts faster, lower lets the trail linger */
+    private fadeK(cfg: FxConfig): number {
+        return (120 - cfg.trailFade) / 60;
+    }
+
     private trailLife(cfg: FxConfig): number {
-        return 6 + cfg.trailLength * 0.9;
+        return (6 + cfg.trailLength * 0.9) * this.fadeK(cfg);
     }
 
     private addTrail(x: number, y: number, cfg: FxConfig) {
@@ -1690,26 +1847,29 @@ export class FxEngine {
         if (dist <= 0) return;
         this.trailAcc += dist;
         const spacing = Math.max(8, 44 - cfg.trailLength * 0.6);
-        const life = 18 + cfg.trailLength * 0.9;
+        const life = (18 + cfg.trailLength * 0.9) * this.fadeK(cfg);
         let guard = 0;
         while (this.trailAcc >= spacing && guard++ < 6) {
             this.trailAcc -= spacing;
             const k = Math.min(1, this.trailAcc / dist);
             const px = x - dx * k;
             const py = y - dy * k;
+            // with the default "accent" the particles keep their own palette group, so nothing changes
+            const custom = cfg.trailColors !== "accent";
+            const wf = cfg.trailWidth / 4;
             if (cfg.trail === "sparkles") {
-                const p = this.emit(SH_STAR, "star", px + rand(-4, 4), py + rand(-4, 4), rand(-0.8, 0.8), rand(-0.8, 0.6), life * rand(0.7, 1), rand(3, 6));
+                const p = this.emit(SH_STAR, custom ? "trail" : "star", px + rand(-4, 4), py + rand(-4, 4), rand(-0.8, 0.8), rand(-0.8, 0.6), life * rand(0.7, 1), rand(3, 6) * wf);
                 if (!p) break;
                 p.g = 0.03;
                 p.drag = 0.97;
                 p.vr = rand(-0.1, 0.1);
             } else if (cfg.trail === "bubbles") {
-                const p = this.emit(SH_BUBBLE, "bubbles", px + rand(-3, 3), py + rand(-3, 3), rand(-0.4, 0.4), rand(-1.2, -0.4), life * rand(0.8, 1.2), rand(3, 8));
+                const p = this.emit(SH_BUBBLE, custom ? "trail" : "bubbles", px + rand(-3, 3), py + rand(-3, 3), rand(-0.4, 0.4), rand(-1.2, -0.4), life * rand(0.8, 1.2), rand(3, 8) * wf);
                 if (!p) break;
                 p.g = -0.01;
                 p.drag = 0.99;
             } else {
-                const p = this.emit(SH_STAR, "star", px, py, rand(-1.5, 1.5), rand(-1.5, 1.5), life * rand(0.8, 1.1), rand(5, 10));
+                const p = this.emit(SH_STAR, custom ? "trail" : "star", px, py, rand(-1.5, 1.5), rand(-1.5, 1.5), life * rand(0.8, 1.1), rand(5, 10) * wf);
                 if (!p) break;
                 p.g = 0.05;
                 p.drag = 0.96;
@@ -1738,6 +1898,7 @@ export class FxEngine {
         const n = pts.length;
         if (!n) return;
         const life = this.trailLife(cfg);
+        const wf = cfg.trailWidth / 4;
         this.base(ctx);
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
@@ -1750,7 +1911,7 @@ export class FxEngine {
                 if (k <= 0) continue;
                 ctx.globalAlpha = k * 0.9;
                 ctx.fillStyle = pal[(p.c * pal.length) | 0].css;
-                const r = 1 + 4.5 * k;
+                const r = (1 + 4.5 * k) * wf;
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, r, 0, TAU);
                 ctx.fill();
@@ -1768,7 +1929,7 @@ export class FxEngine {
                 if (k <= 0) continue;
                 ctx.globalAlpha = Math.min(1, k * 1.2);
                 ctx.strokeStyle = `hsl(${Math.round(this.trailHue + (n - i) * 14) % 360},95%,62%)`;
-                const lw = 1 + 6 * k;
+                const lw = (1 + 6 * k) * wf;
                 ctx.lineWidth = lw;
                 ctx.beginPath();
                 ctx.moveTo(a.x, a.y);
@@ -1791,7 +1952,7 @@ export class FxEngine {
                 const k = (i / n) * Math.max(0, 1 - b.age / life);
                 if (k <= 0) continue;
                 ctx.globalAlpha = pass ? k * 0.9 : k * 0.7;
-                const lw = (pass ? 3 : 9) * k + 0.5;
+                const lw = ((pass ? 3 : 9) * k + 0.5) * wf;
                 ctx.lineWidth = lw;
                 ctx.beginPath();
                 ctx.moveTo(a.x, a.y);
@@ -1805,7 +1966,8 @@ export class FxEngine {
         const hk = 1 - head.age / life;
         if (hk > 0) {
             ctx.globalAlpha = hk * 0.85;
-            this.put(ctx, this.sprites.get("glow", pal[hi]), head.x, head.y, 34, 34, 0, 1);
+            const hs = 34 * wf;
+            this.put(ctx, this.sprites.get("glow", pal[hi]), head.x, head.y, hs, hs, 0, 1);
         }
     }
 
@@ -1813,7 +1975,8 @@ export class FxEngine {
 
     private updateRing(dt: number, cfg: FxConfig) {
         if (!cfg.ring || !this.ringInit) return;
-        const k = 1 - Math.pow(0.78, dt);
+        // ringLag 18 (the default) reproduces the original 0.78 per frame follow
+        const k = 1 - Math.pow(Math.pow(0.78, 18 / cfg.ringLag), dt);
         this.ringX += (this.mx - this.ringX) * k;
         this.ringY += (this.my - this.ringY) * k;
         if (Math.abs(this.mx - this.ringX) + Math.abs(this.my - this.ringY) <= 0.25) {
@@ -1826,16 +1989,18 @@ export class FxEngine {
         if (!cfg.ring || !this.ringInit || !this.mouseActive) return;
         const pal = this.pal("ring");
         const col = pal[pal.length > 3 ? ((this.time / 6) | 0) % pal.length : 0];
+        const r = cfg.ringSize;
+        const halo = r * 4;
         ctx.globalAlpha = 0.55;
-        this.put(ctx, this.sprites.get("halo", col), this.ringX, this.ringY, 64, 64, 0, 1);
+        this.put(ctx, this.sprites.get("halo", col), this.ringX, this.ringY, halo, halo, 0, 1);
         this.base(ctx);
         ctx.globalAlpha = 0.95;
         ctx.strokeStyle = col.css;
-        ctx.lineWidth = 2;
+        ctx.lineWidth = cfg.ringWidth;
         ctx.beginPath();
-        ctx.arc(this.ringX, this.ringY, 16, 0, TAU);
+        ctx.arc(this.ringX, this.ringY, r, 0, TAU);
         ctx.stroke();
-        // the halo sprite (64px) already covers the stroked circle
+        // the halo sprite (4x the radius) already covers the stroked circle
         ctx.globalAlpha = 1;
         ctx.fillStyle = mix(col, WHITE, 0.6).css;
         ctx.beginPath();
@@ -1847,21 +2012,25 @@ export class FxEngine {
     /* ------------------------------------------------------------ clicks */
 
     private clickFx(x: number, y: number, kind: string, s: number) {
-        if (!this.ensureCanvas()) return;
+        const { cfg } = this;
+        if (!cfg || !this.ensureCanvas()) return;
+        // clickCount 18 (the default) keeps the original particle counts; an own color moves them to their own palette
+        const cnt = cfg.clickCount / 18;
+        const own = !!cfg.clickColor;
         switch (kind) {
             case "ripple":
                 for (let i = 0; i < 3; i++) {
-                    const p = this.emit(SH_RING, "ring", x, y, 0, 0, 38, (30 + i * 12) * s);
+                    const p = this.emit(SH_RING, own ? "click" : "ring", x, y, 0, 0, 38, (30 + i * 12) * s);
                     if (!p) break;
                     p.delay = i * 7;
                 }
                 break;
             case "burst": {
-                const n = Math.round(18 * s);
+                const n = Math.max(1, Math.round(18 * s * cnt));
                 for (let i = 0; i < n; i++) {
                     const ang = (i / n) * TAU + rand(-0.2, 0.2);
                     const sp = rand(2, 5.5) * (0.7 + 0.3 * s);
-                    const p = this.emit(SH_DOT, "dot", x, y, Math.cos(ang) * sp, Math.sin(ang) * sp, rand(28, 48), rand(2, 4));
+                    const p = this.emit(SH_DOT, own ? "click" : "dot", x, y, Math.cos(ang) * sp, Math.sin(ang) * sp, rand(28, 48), rand(2, 4));
                     if (!p) break;
                     p.g = 0.12;
                     p.drag = 0.95;
@@ -1869,11 +2038,11 @@ export class FxEngine {
                 break;
             }
             case "stars": {
-                const n = Math.round(8 * s);
+                const n = Math.max(1, Math.round(8 * s * cnt));
                 for (let i = 0; i < n; i++) {
                     const ang = Math.random() * TAU;
                     const sp = rand(1.5, 4);
-                    const p = this.emit(SH_STAR, "star", x, y, Math.cos(ang) * sp, Math.sin(ang) * sp, rand(40, 60), rand(6, 11));
+                    const p = this.emit(SH_STAR, own ? "click" : "star", x, y, Math.cos(ang) * sp, Math.sin(ang) * sp, rand(40, 60), rand(6, 11));
                     if (!p) break;
                     p.g = 0.06;
                     p.drag = 0.96;
@@ -1882,9 +2051,9 @@ export class FxEngine {
                 break;
             }
             case "hearts": {
-                const n = Math.max(1, Math.round(6 * s));
+                const n = Math.max(1, Math.round(6 * s * cnt));
                 for (let i = 0; i < n; i++) {
-                    const p = this.emit(SH_HEART, "hearts", x, y, rand(-1.6, 1.6), rand(-3.2, -1.4), rand(50, 75), rand(8, 14));
+                    const p = this.emit(SH_HEART, own ? "click" : "hearts", x, y, rand(-1.6, 1.6), rand(-3.2, -1.4), rand(50, 75), rand(8, 14));
                     if (!p) break;
                     p.g = -0.01;
                     p.drag = 0.985;
@@ -1892,11 +2061,11 @@ export class FxEngine {
                 break;
             }
             case "confetti": {
-                const n = Math.round(22 * s);
+                const n = Math.max(1, Math.round(22 * s * cnt));
                 for (let i = 0; i < n; i++) {
                     const ang = -Math.PI / 2 + rand(-0.9, 0.9);
                     const sp = rand(3, 7.5);
-                    const p = this.emit(SH_RECT, "confetti", x, y, Math.cos(ang) * sp, Math.sin(ang) * sp, rand(60, 95), rand(5, 9));
+                    const p = this.emit(SH_RECT, own ? "click" : "confetti", x, y, Math.cos(ang) * sp, Math.sin(ang) * sp, rand(60, 95), rand(5, 9));
                     if (!p) break;
                     p.g = 0.16;
                     p.drag = 0.965;

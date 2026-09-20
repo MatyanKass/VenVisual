@@ -7,6 +7,8 @@
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 
+import { normalizeHex } from "../registry";
+
 export interface WidgetConfig {
     clock: boolean;
     clockSeconds: boolean;
@@ -15,7 +17,17 @@ export interface WidgetConfig {
     fps: boolean;
     position: string; // "top-right" | "top-left" | "bottom-right" | "bottom-left" | "top-center"
     style: string; // "glass" | "neon" | "minimal" | "terminal"
+    /* all optional: an older runtime that does not send them still gets today's look */
+    clockFormat?: string; // "24" | "12", default "24"
+    timerLabel?: boolean; // show the ⏱ in front of the session timer, default true
+    fontSize?: number; // px, default 13
+    opacity?: number; // percent, default 100
+    offset?: number; // px from the window edge, default 16
+    color?: string; // hex override, "" = the style's own colors
 }
+
+const DEF_FONT_SIZE = 13;
+const DEF_OFFSET = 16;
 
 const ROOT_ID = "vv-widgets";
 const STYLE_ID = "vc-venvisual-widgets";
@@ -26,7 +38,11 @@ const STYLES = ["glass", "neon", "minimal", "terminal"];
 /** session start = module load */
 const SESSION_START = Date.now();
 
+/* Sizes, offset, opacity and the color override travel as custom properties set on #vv-widgets
+   itself, so this stylesheet stays constant and the browser never reparses it. --vv-w-tint is the
+   accent used by the borders and the neon glow, --vv-w-fg the text color the style picked. */
 const WIDGETS_CSS = `#vv-widgets {
+    --vv-w-tint: var(--vv-accent, #5865f2);
     position: fixed;
     z-index: 2147483300;
     pointer-events: none;
@@ -34,17 +50,18 @@ const WIDGETS_CSS = `#vv-widgets {
     flex-direction: row;
     align-items: center;
     gap: 8px;
-    font: 600 13px var(--font-primary, "gg sans", sans-serif);
+    font: 600 var(--vv-w-size, 13px) var(--font-primary, "gg sans", sans-serif);
     font-variant-numeric: tabular-nums;
     line-height: 1.2;
     white-space: nowrap;
     user-select: none;
+    opacity: var(--vv-w-opacity, 1);
 }
-#vv-widgets.vv-w-pos-top-right { top: 40px; right: 16px; }
-#vv-widgets.vv-w-pos-top-left { top: 40px; left: 16px; }
-#vv-widgets.vv-w-pos-bottom-right { bottom: 16px; right: 16px; }
-#vv-widgets.vv-w-pos-bottom-left { bottom: 16px; left: 16px; }
-#vv-widgets.vv-w-pos-top-center { top: 40px; left: 50%; transform: translateX(-50%); }
+#vv-widgets.vv-w-pos-top-right { top: calc(24px + var(--vv-w-offset, 16px)); right: var(--vv-w-offset, 16px); }
+#vv-widgets.vv-w-pos-top-left { top: calc(24px + var(--vv-w-offset, 16px)); left: var(--vv-w-offset, 16px); }
+#vv-widgets.vv-w-pos-bottom-right { bottom: var(--vv-w-offset, 16px); right: var(--vv-w-offset, 16px); }
+#vv-widgets.vv-w-pos-bottom-left { bottom: var(--vv-w-offset, 16px); left: var(--vv-w-offset, 16px); }
+#vv-widgets.vv-w-pos-top-center { top: calc(24px + var(--vv-w-offset, 16px)); left: 50%; transform: translateX(-50%); }
 @keyframes vv-w-in { from { opacity: 0; transform: translateY(-4px) scale(.96); } to { opacity: 1; transform: none; } }
 @keyframes vv-w-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
 #vv-widgets .vv-w-item {
@@ -57,33 +74,33 @@ const WIDGETS_CSS = `#vv-widgets {
 #vv-widgets .vv-w-date { opacity: .72; font-weight: 500; }
 
 #vv-widgets.vv-w-style-glass .vv-w-item {
-    color: #fff;
+    color: var(--vv-w-fg, #fff);
     background: rgba(18, 18, 26, .42);
     backdrop-filter: blur(12px) saturate(140%);
-    border: 1px solid color-mix(in srgb, var(--vv-accent, #5865f2) 45%, rgba(255, 255, 255, .12));
+    border: 1px solid color-mix(in srgb, var(--vv-w-tint) 45%, rgba(255, 255, 255, .12));
     border-radius: 999px;
     box-shadow: 0 4px 18px rgba(0, 0, 0, .25), inset 0 1px 0 rgba(255, 255, 255, .06);
     text-shadow: 0 1px 2px rgba(0, 0, 0, .35);
 }
 
 #vv-widgets.vv-w-style-neon .vv-w-item {
-    color: var(--vv-accent, #5865f2);
+    color: var(--vv-w-fg, var(--vv-w-tint));
     background: rgba(8, 8, 14, .82);
-    border: 1px solid var(--vv-accent, #5865f2);
+    border: 1px solid var(--vv-w-tint);
     border-radius: 8px;
-    text-shadow: 0 0 4px var(--vv-accent, #5865f2), 0 0 12px color-mix(in srgb, var(--vv-accent, #5865f2) 70%, transparent);
-    box-shadow: 0 0 8px color-mix(in srgb, var(--vv-accent, #5865f2) 60%, transparent), inset 0 0 8px color-mix(in srgb, var(--vv-accent, #5865f2) 30%, transparent);
+    text-shadow: 0 0 4px var(--vv-w-tint), 0 0 12px color-mix(in srgb, var(--vv-w-tint) 70%, transparent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--vv-w-tint) 60%, transparent), inset 0 0 8px color-mix(in srgb, var(--vv-w-tint) 30%, transparent);
 }
 
 #vv-widgets.vv-w-style-minimal .vv-w-item {
-    color: #fff;
+    color: var(--vv-w-fg, #fff);
     background: none;
     padding: 2px 4px;
     text-shadow: 0 1px 3px rgba(0, 0, 0, .9), 0 0 8px rgba(0, 0, 0, .6);
 }
 
 #vv-widgets.vv-w-style-terminal .vv-w-item {
-    color: #00ff41;
+    color: var(--vv-w-fg, #00ff41);
     background: #000;
     border: 1px solid rgba(0, 255, 65, .35);
     border-radius: 3px;
@@ -99,7 +116,7 @@ const WIDGETS_CSS = `#vv-widgets {
     height: 1em;
     margin-left: 3px;
     vertical-align: -2px;
-    background: #00ff41;
+    background: var(--vv-w-fg, #00ff41);
     box-shadow: 0 0 4px rgba(0, 255, 65, .6);
     animation: vv-w-blink 1s steps(1) infinite;
 }`;
@@ -125,20 +142,31 @@ let visBound = false;
 
 let showSeconds = false;
 let showDate = false;
+let hour12 = false;
+let showTimerLabel = true;
 
 let fmtTime: Intl.DateTimeFormat | null = null;
 let fmtTimeSec: Intl.DateTimeFormat | null = null;
 let fmtDate: Intl.DateTimeFormat | null = null;
 
 function timeFormatter(seconds: boolean): Intl.DateTimeFormat {
+    // ru-RU has no AM/PM, so the 12-hour clock borrows en-US just for the time
+    const locale = hour12 ? "en-US" : "ru-RU";
+    const cycle = hour12 ? "h12" : "h23";
     if (seconds) {
-        return fmtTimeSec ??= new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+        return fmtTimeSec ??= new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: cycle });
     }
-    return fmtTime ??= new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    return fmtTime ??= new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hourCycle: cycle });
 }
 
 function dateFormatter(): Intl.DateTimeFormat {
     return fmtDate ??= new Intl.DateTimeFormat("ru-RU", { weekday: "short", day: "numeric", month: "short" });
+}
+
+/** a number from the config, or the fallback when it is missing / not finite */
+function clampNum(value: unknown, min: number, max: number, fallback: number): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(value)));
 }
 
 function pad2(n: number): string {
@@ -150,7 +178,7 @@ function formatSession(ms: number): string {
     const h = Math.floor(total / 3600);
     const m = Math.floor((total % 3600) / 60);
     const s = total % 60;
-    return `⏱ ${h}:${pad2(m)}:${pad2(s)}`;
+    return `${showTimerLabel ? "⏱ " : ""}${h}:${pad2(m)}:${pad2(s)}`;
 }
 
 function setText(node: Text | null, text: string) {
@@ -259,14 +287,27 @@ export function configureWidgets(cfg: WidgetConfig | null): void {
 
     const position = POSITIONS.includes(cfg.position) ? cfg.position : "top-right";
     const style = STYLES.includes(cfg.style) ? cfg.style : "glass";
+    // every look option is optional: a runtime that does not send it falls back to today's value
+    const fontSize = clampNum(cfg.fontSize, 6, 64, DEF_FONT_SIZE);
+    const opacity = clampNum(cfg.opacity, 0, 100, 100);
+    const offset = clampNum(cfg.offset, 0, 400, DEF_OFFSET);
+    const color = normalizeHex(typeof cfg.color === "string" ? cfg.color : undefined) ?? "";
+    const twelve = cfg.clockFormat === "12";
+    const timerLabel = cfg.timerLabel !== false;
     const key = [
         cfg.clock ? 1 : 0,
         cfg.clock && cfg.clockSeconds ? 1 : 0,
         cfg.clock && cfg.clockDate ? 1 : 0,
+        cfg.clock && twelve ? 1 : 0,
         cfg.sessionTimer ? 1 : 0,
+        cfg.sessionTimer && timerLabel ? 1 : 0,
         cfg.fps ? 1 : 0,
         position,
-        style
+        style,
+        fontSize,
+        opacity,
+        offset,
+        color
     ].join("|");
 
     // same config and everything still in place -> nothing to do
@@ -290,9 +331,21 @@ export function configureWidgets(cfg: WidgetConfig | null): void {
     root.id = ROOT_ID;
     root.className = `vv-w-pos-${position} vv-w-style-${style}`;
     root.setAttribute("aria-hidden", "true");
+    if (fontSize !== DEF_FONT_SIZE) root.style.setProperty("--vv-w-size", `${fontSize}px`);
+    if (offset !== DEF_OFFSET) root.style.setProperty("--vv-w-offset", `${offset}px`);
+    if (opacity !== 100) root.style.setProperty("--vv-w-opacity", String(opacity / 100));
+    if (color) {
+        root.style.setProperty("--vv-w-tint", color);
+        root.style.setProperty("--vv-w-fg", color);
+    }
 
     showSeconds = cfg.clockSeconds;
     showDate = cfg.clockDate;
+    showTimerLabel = timerLabel;
+    if (twelve !== hour12) {
+        hour12 = twelve;
+        fmtTime = fmtTimeSec = null;
+    }
 
     if (cfg.clock) {
         const item = makeItem("clock");

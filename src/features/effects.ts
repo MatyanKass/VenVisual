@@ -33,6 +33,16 @@ export const effectFeatures: Feature[] = [
     { id: "particleWind", cat: "effects", group: "Частицы на экране", kind: "slider", label: "Ветер", default: 0, min: -100, max: 100, dependsOn: "particles" },
     { id: "particleMouse", cat: "effects", group: "Частицы на экране", kind: "toggle", label: "Частицы разлетаются от курсора", default: true, dependsOn: "particles" },
     {
+        id: "particle3d", cat: "effects", group: "Частицы на экране", kind: "toggle", label: "Объёмный полёт",
+        desc: "Частицы летят на разной глубине: дальние мельче, медленнее, бледнее и чуть размыты, ближние крупнее и резче. Лепестки и листья переворачиваются в воздухе",
+        default: true, dependsOn: "particles"
+    },
+    {
+        id: "particleDepth", cat: "effects", group: "Частицы на экране", kind: "slider", label: "Сила объёма", default: 60, min: 0, max: 100,
+        dependsOn: "particles", activeWhen: v => !!v.particle3d, activeHint: "Работает только с «Объёмным полётом»"
+    },
+    { id: "particleSpin", cat: "effects", group: "Частицы на экране", kind: "slider", label: "Скорость вращения", default: 100, min: 0, max: 200, unit: "%", dependsOn: "particles" },
+    {
         id: "fxLayer", cat: "effects", group: "Частицы на экране", kind: "select", label: "Слой частиц", default: "front",
         options: [{ value: "front", label: "Поверх интерфейса" }, { value: "back", label: "Позади интерфейса (видно через прозрачные панели)" }]
     },
@@ -50,7 +60,25 @@ export const effectFeatures: Feature[] = [
         ]
     },
     { id: "trailLength", cat: "effects", group: "Курсор", kind: "slider", label: "Длина следа", default: 20, min: 5, max: 60, dependsOn: "cursorTrail" },
+    {
+        id: "trailColor", cat: "effects", group: "Курсор", kind: "select", label: "Цвет следа", default: "accent", dependsOn: "cursorTrail",
+        options: [
+            { value: "accent", label: "Как у остальных эффектов" },
+            { value: "custom", label: "Свой цвет" },
+            { value: "rainbow", label: "Радуга" }
+        ]
+    },
+    {
+        id: "trailColor1", cat: "effects", group: "Курсор", kind: "color", label: "Свой цвет следа", default: "#ffb7c5",
+        dependsOn: "cursorTrail", activeWhen: v => v.trailColor === "custom", activeHint: "Нужен цвет следа «Свой цвет»"
+    },
+    { id: "trailWidth", cat: "effects", group: "Курсор", kind: "slider", label: "Толщина следа", default: 4, min: 1, max: 12, dependsOn: "cursorTrail" },
+    { id: "trailFade", cat: "effects", group: "Курсор", kind: "slider", label: "Как быстро тает след", default: 60, min: 10, max: 100, unit: "%", dependsOn: "cursorTrail" },
     { id: "cursorRing", cat: "effects", group: "Курсор", kind: "toggle", label: "Кольцо, которое догоняет курсор", default: false },
+    { id: "ringSize", cat: "effects", group: "Курсор", kind: "slider", label: "Размер кольца", default: 16, min: 6, max: 48, unit: " px", dependsOn: "cursorRing" },
+    { id: "ringWidth", cat: "effects", group: "Курсор", kind: "slider", label: "Толщина кольца", default: 2, min: 1, max: 6, unit: " px", dependsOn: "cursorRing" },
+    { id: "ringColor", cat: "effects", group: "Курсор", kind: "color", label: "Цвет кольца", desc: "Пусто — цвет берётся из темы", default: "", dependsOn: "cursorRing" },
+    { id: "ringLag", cat: "effects", group: "Курсор", kind: "slider", label: "Насколько кольцо отстаёт", default: 18, min: 5, max: 60, dependsOn: "cursorRing" },
 
     {
         id: "clickEffect", cat: "effects", group: "Клики и события", kind: "select", label: "Эффект при клике", default: "none",
@@ -64,6 +92,8 @@ export const effectFeatures: Feature[] = [
         ]
     },
     { id: "clickIntensity", cat: "effects", group: "Клики и события", kind: "slider", label: "Сила эффекта клика", default: 100, min: 30, max: 300, unit: "%", dependsOn: "clickEffect" },
+    { id: "clickCount", cat: "effects", group: "Клики и события", kind: "slider", label: "Сколько частиц в клике", default: 18, min: 4, max: 60, dependsOn: "clickEffect" },
+    { id: "clickColor", cat: "effects", group: "Клики и события", kind: "color", label: "Цвет эффекта клика", desc: "Пусто — цвет берётся из темы", default: "", dependsOn: "clickEffect" },
     {
         id: "sendEffect", cat: "effects", group: "Клики и события", kind: "select", label: "Когда отправляешь сообщение", default: "none",
         options: [
@@ -74,6 +104,7 @@ export const effectFeatures: Feature[] = [
             { value: "stars", label: "⭐ Звёзды" }
         ]
     },
+    { id: "sendEffectSize", cat: "effects", group: "Клики и события", kind: "slider", label: "Размер эффекта при отправке", default: 100, min: 30, max: 300, unit: "%", dependsOn: "sendEffect" },
     { id: "typingSparks", cat: "effects", group: "Клики и события", kind: "toggle", label: "Искры при наборе текста", desc: "Из поля ввода вылетают искорки на каждую букву", default: false },
     { id: "mentionFlash", cat: "effects", group: "Клики и события", kind: "toggle", label: "Вспышка по краям экрана, когда тебя упомянули", default: false },
     { id: "mentionShake", cat: "effects", group: "Клики и события", kind: "toggle", label: "Лёгкая встряска чата при упоминании", default: false },
@@ -84,8 +115,17 @@ export const effectFeatures: Feature[] = [
             { value: "accent", label: "Акценты темы" },
             { value: "rainbow", label: "Радуга" },
             { value: "white", label: "Белый" },
-            { value: "natural", label: "Естественные (у снега белый, у сакуры розовый…)" }
+            { value: "natural", label: "Естественные (у снега белый, у сакуры розовый…)" },
+            { value: "custom", label: "Свои цвета" }
         ]
+    },
+    {
+        id: "fxColor1", cat: "effects", group: "Общее", kind: "color", label: "Свой цвет эффектов 1", default: "#ffb7c5",
+        activeWhen: v => v.fxColors === "custom", activeHint: "Нужны цвета эффектов «Свои цвета»"
+    },
+    {
+        id: "fxColor2", cat: "effects", group: "Общее", kind: "color", label: "Свой цвет эффектов 2", default: "#ff7eb6",
+        activeWhen: v => v.fxColors === "custom", activeHint: "Нужны цвета эффектов «Свои цвета»"
     },
     { id: "fxPauseUnfocused", cat: "effects", group: "Общее", kind: "toggle", label: "Пауза, когда Discord не в фокусе", desc: "Экономит ресурсы", default: true },
     {
