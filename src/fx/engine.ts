@@ -5,7 +5,10 @@
  */
 
 // Canvas effects engine: ambient particles, cursor trail / ring, click effects and one-shot bursts.
-// Everything is drawn on a single fixed canvas. The rAF loop only runs while something animates.
+// The backing store follows the quality setting (not the raw dpr), each frame only clears the boxes the previous
+// one drew into, and the frame cap / resolution adapt when drawing gets expensive.
+// Everything is drawn on one fixed front canvas; only when particles are on the "back" layer they get a second
+// canvas behind the interface. The rAF loop only runs while something animates.
 
 export interface FxConfig {
     particles: string;
@@ -23,9 +26,22 @@ export interface FxConfig {
     clickIntensity: number;
     colors: string;
     pauseUnfocused: boolean;
-    fps: number;
+    /** frame cap: 0 = unlimited, 30 / 60 = fixed, "auto" (or a negative number) = adaptive */
+    fps: number | "auto";
+    /** backing store resolution: high = min(dpr, 2), medium = 1, low = 0.75, auto = adaptive 1 / 0.85 / 0.7 */
+    quality: FxQuality;
     accent: string;
     accent2: string;
+}
+
+export type FxQuality = "auto" | "high" | "medium" | "low";
+
+export interface FxStats {
+    fps: number;
+    drawMs: number;
+    particles: number;
+    scale: number;
+    cap: number;
 }
 
 export type BurstKind = "confetti" | "fireworks" | "hearts" | "stars" | "sparks";
@@ -63,10 +79,28 @@ interface TrailPoint { x: number; y: number; age: number; c: number; }
 
 const TAU = Math.PI * 2;
 const MAX_BURST = 1500;
+/** particles a single frame may spawn (rocket tails / explosions run inside the update loop) */
+const MAX_SPAWN = 600;
 const MAX_SPRITES = 160;
 const REPEL_R = 110;
 const SPR = 64;
 const CELL = 32;
+
+/** dirty rectangles: how many boxes are tracked before falling back to a full clear */
+const MAX_RECTS = 384;
+/** padding added to every tracked box (anti-aliasing / glow bleed), CSS px */
+const RECT_PAD = 3;
+/** above this share of the viewport a full clear is cheaper than many small ones */
+const DIRTY_LIMIT = 0.35;
+/** that many live ambient particles count as "full screen" */
+const FULL_PARTICLES = 150;
+
+const AUTO_FPS = [60, 45, 30];
+const AUTO_SCALE = [1, 0.85, 0.7];
+/** minimum delay between two quality steps (ms) */
+const STEP_COOLDOWN = 2000;
+/** accent colors are rounded to this many units before they invalidate sprite / palette caches */
+const COL_QUANT = 8;
 
 const SH_DOT = 0;
 const SH_SPARK = 1;
@@ -77,11 +111,15 @@ const SH_BUBBLE = 5;
 const SH_RING = 6;
 const SH_ROCKET = 7;
 
+const FRONT_Z = 2147483100;
+
 const AMBIENT_KINDS = new Set(["snow", "sakura", "leaves", "rain", "stars", "fireflies", "bubbles", "hearts", "embers", "dust", "matrix", "confetti"]);
 const TRAIL_KINDS = new Set(["dots", "sparkles", "rainbow", "comet", "bubbles", "stars"]);
 const LINE_TRAILS = new Set(["dots", "rainbow", "comet"]);
 const CLICK_KINDS = new Set(["ripple", "burst", "stars", "hearts", "confetti"]);
+const BURST_KINDS = new Set<string>(["confetti", "fireworks", "hearts", "stars", "sparks"]);
 const COLOR_MODES = new Set(["accent", "rainbow", "white", "natural"]);
+const QUALITIES = new Set<string>(["auto", "high", "medium", "low"]);
 const FALLING = new Set(["snow", "sakura", "leaves", "rain", "confetti"]);
 const RISING = new Set(["bubbles", "hearts", "embers"]);
 
@@ -129,6 +167,11 @@ function mix(c: Col, t: Col, k: number): Col {
 
 function rgba(c: Col, a: number): string {
     return `rgba(${c.r},${c.g},${c.b},${a})`;
+}
+
+/** Snaps a color to a coarse grid so a slowly cycling accent does not re-render sprite atlases every tick. */
+function quantCol(c: Col): Col {
+    return makeCol(Math.round(c.r / COL_QUANT) * COL_QUANT, Math.round(c.g / COL_QUANT) * COL_QUANT, Math.round(c.b / COL_QUANT) * COL_QUANT);
 }
 
 const WHITE = makeCol(255, 255, 255);
@@ -372,9 +415,89 @@ class SpriteCache {
     }
 }
 
+/**
+ * Bounding boxes (CSS px) of everything drawn in a frame, so the next frame only has to clear those.
+ * Two flat number arrays are swapped every frame, so the tracker never allocates while drawing.
+ */
+class DirtyRects {
+    private cur: number[] = [];
+    private prev: number[] = [];
+    private curN = 0;
+    private prevN = 0;
+    private curArea = 0;
+    private prevArea = 0;
+    private curFull = true;
+    private prevFull = true;
+
+    /** Opens a new frame: what was collected last frame becomes what has to be cleared now. */
+    begin() {
+        const swap = this.prev;
+        this.prev = this.cur;
+        this.cur = swap;
+        this.prevN = this.curN;
+        this.prevArea = this.curArea;
+        this.prevFull = this.curFull;
+        this.curN = 0;
+        this.curArea = 0;
+        this.curFull = false;
+    }
+
+    /** Resize / config change: the whole canvas has to be cleared once. */
+    invalidate() {
+        this.curFull = true;
+        this.prevFull = true;
+    }
+
+    /** This frame covers most of the screen - clear it in one go next time. */
+    markFull() {
+        this.curFull = true;
+    }
+
+    add(x0: number, y0: number, x1: number, y1: number) {
+        if (this.curFull) return;
+        if (this.curN >= MAX_RECTS * 4) {
+            this.curFull = true;
+            return;
+        }
+        const a = this.cur;
+        const i = this.curN;
+        a[i] = x0;
+        a[i + 1] = y0;
+        a[i + 2] = x1;
+        a[i + 3] = y1;
+        this.curN = i + 4;
+        this.curArea += (x1 - x0) * (y1 - y0);
+    }
+
+    /** true while the canvas still holds something from an earlier frame */
+    pending(): boolean {
+        return this.prevFull || this.prevN > 0;
+    }
+
+    needsFull(viewport: number): boolean {
+        return this.prevFull || this.prevArea > viewport * DIRTY_LIMIT;
+    }
+
+    list(): number[] {
+        return this.prev;
+    }
+
+    count(): number {
+        return this.prevN;
+    }
+}
+
 function num(v: any, def: number, min: number, max: number): number {
     const n = Number(v);
     return Number.isFinite(n) ? clamp(n, min, max) : def;
+}
+
+/** "auto" and anything negative become -1 (adaptive); 0 stays unlimited. */
+function normFps(v: number | "auto"): number {
+    if (v === "auto") return -1;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return n < 0 ? -1 : 60;
+    return Math.round(clamp(n, 0, 1000));
 }
 
 function normalize(c: FxConfig): FxConfig {
@@ -394,7 +517,8 @@ function normalize(c: FxConfig): FxConfig {
         clickIntensity: num(c.clickIntensity, 100, 30, 300),
         colors: COLOR_MODES.has(c.colors) ? c.colors : "accent",
         pauseUnfocused: !!c.pauseUnfocused,
-        fps: num(c.fps, 60, 0, 1000),
+        fps: normFps(c.fps),
+        quality: QUALITIES.has(c.quality) ? c.quality : "auto",
         accent: String(c.accent ?? ""),
         accent2: String(c.accent2 ?? "")
     };
@@ -406,14 +530,37 @@ export class FxEngine {
     private cfg: FxConfig | null = null;
     private canvas: HTMLCanvasElement | null = null;
     private ctx: CanvasRenderingContext2D | null = null;
+    /** ambient particles on the "back" layer (behind the interface); trail, ring and bursts always stay in front */
+    private back: HTMLCanvasElement | null = null;
+    private backCtx: CanvasRenderingContext2D | null = null;
     private w = 0;
     private h = 0;
     private dpr = 1;
+    /** backing store factor actually in use (CSS px -> device px) */
+    private scale = 1;
+    private quality: FxQuality = "auto";
+    /** normalized fps setting: -1 adaptive, 0 unlimited, otherwise a cap */
+    private fpsMode = 60;
+
+    /** boxes drawn on the front / back canvas, used to clear only what changed */
+    private frontTrk = new DirtyRects();
+    private backTrk = new DirtyRects();
+    /** tracker the current draw calls report into */
+    private trk: DirtyRects | null = null;
 
     private raf = 0;
     private running = false;
     private lastFrame = 0;
     private time = 0;
+    private spawned = 0;
+
+    /* adaptive quality */
+    private level = 0;
+    private lastStep = 0;
+    private avgDraw = 0;
+    private avgGap = 0;
+    private lateRun = 0;
+    private calmRun = 0;
     private idleTimer: ReturnType<typeof setTimeout> | null = null;
     private focused = true;
     private moveBound = false;
@@ -454,7 +601,14 @@ export class FxEngine {
         const prev = this.cfg;
         const next = normalize(input);
         this.cfg = next;
+        this.fpsMode = normFps(next.fps);
+        const qualityChanged = this.quality !== next.quality;
+        this.quality = next.quality;
+        if (qualityChanged) this.level = 0;
         if (!this.canvas) this.measure();
+        else if (qualityChanged) this.rescale();
+        this.frontTrk.invalidate();
+        this.backTrk.invalidate();
 
         const accentChanged = this.applyAccent(next.accent, next.accent2);
         if (!prev || prev.colors !== next.colors || accentChanged) this.palettes.clear();
@@ -476,31 +630,42 @@ export class FxEngine {
 
         if (this.persistentNeed()) {
             this.ensureCanvas();
-            if (prev && prev.layer !== next.layer) this.placeCanvas();
         } else if (this.bursts.length === 0) {
             this.removeCanvas();
-        } else if (prev && prev.layer !== next.layer) {
-            this.placeCanvas();
         }
+        this.syncBack();
 
         this.bindInput();
         this.kick(true);
     }
 
     setAccent(accent: string, accent2: string): void {
+        const a = String(accent ?? "");
+        const a2 = String(accent2 ?? "");
         if (this.cfg) {
-            this.cfg.accent = String(accent ?? "");
-            this.cfg.accent2 = String(accent2 ?? "");
+            this.cfg.accent = a;
+            this.cfg.accent2 = a2;
         }
-        if (!this.applyAccent(String(accent ?? ""), String(accent2 ?? ""))) return;
+        // quantized: a rainbow accent only invalidates the caches when it really moved a visible step
+        if (!this.applyAccent(a, a2)) return;
         this.palettes.clear();
-        // redraw static content (e.g. a resting ring) with the new color
-        if (this.canvas && !this.running) this.kick(true);
+        // no forced redraw: a resting canvas picks the new color up on its next real frame
+        this.kick(false);
+    }
+
+    getStats(): FxStats {
+        return {
+            fps: this.avgGap > 0 ? Math.round(1000 / this.avgGap) : 0,
+            drawMs: Math.round(this.avgDraw * 100) / 100,
+            particles: this.amb.length + this.cols.length + this.bursts.length + this.trail.length,
+            scale: this.scale,
+            cap: this.fpsCap()
+        };
     }
 
     burstAt(x: number, y: number, kind: BurstKind, intensity = 1): void {
         const { cfg } = this;
-        if (!cfg || document.hidden) return;
+        if (!cfg || document.hidden || !BURST_KINDS.has(kind)) return;
         if (!Number.isFinite(x) || !Number.isFinite(y)) return;
         const s = clamp(Number(intensity) || 1, 0.1, 5);
         if (!this.ensureCanvas()) return;
@@ -592,6 +757,15 @@ export class FxEngine {
         this.kind = "none";
         this.ringInit = false;
         this.mouseActive = false;
+        this.trk = null;
+        this.spawned = 0;
+        this.frontTrk.invalidate();
+        this.backTrk.invalidate();
+        this.level = 0;
+        this.avgDraw = 0;
+        this.avgGap = 0;
+        this.lateRun = 0;
+        this.calmRun = 0;
         this.sprites.clear();
         this.palettes.clear();
     }
@@ -600,8 +774,8 @@ export class FxEngine {
         if (a === this.accentSrc && a2 === this.accent2Src) return false;
         this.accentSrc = a;
         this.accent2Src = a2;
-        const c1 = toCol(a, DEF_ACCENT);
-        const c2 = toCol(a2, DEF_ACCENT2);
+        const c1 = quantCol(toCol(a, DEF_ACCENT));
+        const c2 = quantCol(toCol(a2, DEF_ACCENT2));
         if (c1.css === this.accent.css && c2.css === this.accent2.css) return false;
         this.accent = c1;
         this.accent2 = c2;
@@ -614,9 +788,54 @@ export class FxEngine {
     }
 
     private measure() {
-        this.dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
+        this.dpr = clamp(window.devicePixelRatio || 1, 1, 4);
         this.w = Math.max(1, window.innerWidth);
         this.h = Math.max(1, window.innerHeight);
+        this.scale = this.targetScale();
+    }
+
+    /** Backing store factor for the current quality setting. */
+    private targetScale(): number {
+        switch (this.quality) {
+            case "high": return Math.min(this.dpr, 2);
+            case "medium": return 1;
+            case "low": return 0.75;
+            default: return AUTO_SCALE[this.level];
+        }
+    }
+
+    private fpsCap(): number {
+        return this.fpsMode < 0 ? AUTO_FPS[this.level] : this.fpsMode;
+    }
+
+    /** true while either the frame cap or the resolution is allowed to adapt */
+    private adaptive(): boolean {
+        return this.fpsMode < 0 || this.quality === "auto";
+    }
+
+    /** Applies a new resolution factor to both canvases; a no-op when nothing changed. */
+    private rescale() {
+        const next = this.targetScale();
+        if (Math.abs(next - this.scale) < 0.001) return;
+        this.scale = next;
+        this.applySize();
+    }
+
+    private applySize() {
+        const { canvas } = this;
+        if (!canvas) return;
+        const cw = Math.max(1, Math.round(this.w * this.scale));
+        const ch = Math.max(1, Math.round(this.h * this.scale));
+        if (canvas.width !== cw || canvas.height !== ch) {
+            canvas.width = cw;
+            canvas.height = ch;
+        }
+        if (this.back && (this.back.width !== cw || this.back.height !== ch)) {
+            this.back.width = cw;
+            this.back.height = ch;
+        }
+        this.frontTrk.invalidate();
+        this.backTrk.invalidate();
     }
 
     private ensureCanvas(): boolean {
@@ -642,14 +861,58 @@ export class FxEngine {
     private placeCanvas() {
         const { canvas, cfg } = this;
         if (!canvas || !cfg || !document.body) return;
-        const z = cfg.layer === "back" ? -1 : 2147483100;
-        canvas.style.cssText = `position:fixed;inset:0;width:100%;height:100%;pointer-events:none;user-select:none;contain:strict;z-index:${z};`;
+        canvas.style.cssText = `position:fixed;inset:0;width:100%;height:100%;pointer-events:none;user-select:none;contain:strict;image-rendering:auto;z-index:${FRONT_Z};`;
         document.body.appendChild(canvas);
+        this.frontTrk.invalidate();
+        this.syncBack();
+    }
+
+    private wantsBack(): boolean {
+        return !!this.cfg && this.cfg.layer === "back" && this.kind !== "none";
+    }
+
+    /** creates / removes the back layer canvas. It lives inside #app-mount so it shares a stacking context with the
+     *  background layer (#app-mount::before) even when a window filter turns #app-mount into its own context. */
+    private syncBack() {
+        if (!this.canvas || !this.wantsBack()) {
+            this.removeBack();
+            return;
+        }
+        if (this.back) return;
+        const host = document.getElementById("app-mount") ?? document.body;
+        if (!host) return;
+        const cv = document.createElement("canvas");
+        cv.id = "vv-fx-back";
+        cv.setAttribute("aria-hidden", "true");
+        const ctx = cv.getContext("2d");
+        if (!ctx) return;
+        // z-index 0 as the first child of #app-mount: above the background layer (#app-mount::before, z-index -1),
+        // below the positioned interface, and inside the same filter / stacking context as the app itself
+        cv.style.cssText = "position:fixed;inset:0;width:100%;height:100%;pointer-events:none;user-select:none;contain:strict;image-rendering:auto;z-index:0;";
+        cv.width = Math.max(1, Math.round(this.w * this.scale));
+        cv.height = Math.max(1, Math.round(this.h * this.scale));
+        host.prepend(cv);
+        this.back = cv;
+        this.backCtx = ctx;
+        // ambient particles move off the front canvas
+        this.frontTrk.invalidate();
+        this.backTrk.invalidate();
+    }
+
+    private removeBack() {
+        if (!this.back) return;
+        this.back.remove();
+        this.back = null;
+        this.backCtx = null;
+        this.backTrk.invalidate();
+        // whatever the back canvas showed has to be drawn on the front one again
+        this.frontTrk.invalidate();
     }
 
     private removeCanvas() {
         this.clearIdle();
         this.stopLoop();
+        this.removeBack();
         if (!this.canvas) return;
         window.removeEventListener("resize", this.onResize);
         document.removeEventListener("visibilitychange", this.onVisibility);
@@ -661,13 +924,11 @@ export class FxEngine {
     }
 
     private resize() {
-        const { canvas } = this;
-        if (!canvas) return;
+        if (!this.canvas) return;
         const ow = this.w;
         const oh = this.h;
         this.measure();
-        canvas.width = Math.max(1, Math.round(this.w * this.dpr));
-        canvas.height = Math.max(1, Math.round(this.h * this.dpr));
+        this.applySize();
         if (ow > 0 && oh > 0 && (ow !== this.w || oh !== this.h)) {
             const sx = this.w / ow;
             const sy = this.h / oh;
@@ -749,7 +1010,11 @@ export class FxEngine {
             this.ringY = py;
             this.ringInit = true;
         }
-        if (cfg.trail !== "none") {
+        if (cfg.trail !== "none" && !this.canRun()) {
+            // paused (unfocused / hidden): nothing would age the trail, so do not collect a backlog
+            this.trail.length = 0;
+            this.trailAcc = 0;
+        } else if (cfg.trail !== "none") {
             if (!wasActive) {
                 this.lastMx = px;
                 this.lastMy = py;
@@ -786,8 +1051,9 @@ export class FxEngine {
         const { cfg } = this;
         if (!cfg) return false;
         if (this.kind !== "none" || this.bursts.length > 0 || this.trail.length > 0) return true;
+        // the lagging ring is the only thing left: settle it and let the loop stop
         return cfg.ring && this.ringInit && this.mouseActive
-            && Math.abs(this.mx - this.ringX) + Math.abs(this.my - this.ringY) > 0.3;
+            && Math.abs(this.mx - this.ringX) + Math.abs(this.my - this.ringY) > 0.25;
     }
 
     /** Starts the loop if needed. force = draw at least one frame even if nothing animates. */
@@ -801,6 +1067,7 @@ export class FxEngine {
         this.clearIdle();
         this.running = true;
         this.lastFrame = 0;
+        this.spawned = 0;
         this.raf = requestAnimationFrame(this.frame);
     }
 
@@ -819,28 +1086,57 @@ export class FxEngine {
             this.lastFrame = 0;
             return;
         }
-        const interval = cfg.fps > 0 ? 1000 / cfg.fps : 0;
+        const cap = this.fpsCap();
+        const interval = cap > 0 ? 1000 / cap : 0;
         if (this.lastFrame && interval && now - this.lastFrame < interval - 3) {
             this.raf = requestAnimationFrame(this.frame);
             return;
         }
-        const dt = this.lastFrame ? clamp((now - this.lastFrame) / (1000 / 60), 0.05, 3) : 1;
+        const gap = this.lastFrame ? now - this.lastFrame : 1000 / 60;
+        const dt = clamp(gap / (1000 / 60), 0.05, 3);
         this.lastFrame = now;
         this.time += dt;
+
+        const t0 = performance.now();
 
         this.updateAmbient(dt, cfg);
         this.updateBursts(dt);
         this.updateTrail(dt, cfg);
         this.updateRing(dt, cfg);
 
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.globalAlpha = 1;
-        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-        this.drawAmbient(ctx, cfg);
-        this.drawTrail(ctx, cfg);
-        this.drawBursts(ctx);
-        this.drawRing(ctx, cfg);
-        ctx.globalAlpha = 1;
+        const back = this.back && this.wantsBack() ? this.backCtx : null;
+        const frontHas = this.trail.length > 0 || this.bursts.length > 0
+            || (cfg.ring && this.ringInit && this.mouseActive)
+            || (!back && this.kind !== "none");
+
+        // begin() first: it promotes what the last frame drew to "has to be cleared now"
+        this.frontTrk.begin();
+        if (back) {
+            this.backTrk.begin();
+            this.clearDirty(back, this.backTrk);
+            this.trk = this.backTrk;
+            back.globalAlpha = 1;
+            this.drawAmbient(back, cfg);
+            back.globalAlpha = 1;
+        }
+
+        // an idle front canvas is left untouched (no clear / re-upload every frame)
+        if (frontHas || this.frontTrk.pending()) {
+            this.clearDirty(ctx, this.frontTrk);
+            this.trk = this.frontTrk;
+            ctx.globalAlpha = 1;
+            if (!back) this.drawAmbient(ctx, cfg);
+            this.drawTrail(ctx, cfg);
+            this.drawBursts(ctx);
+            this.drawRing(ctx, cfg);
+            ctx.globalAlpha = 1;
+        }
+        this.trk = null;
+        this.spawned = 0;
+
+        this.avgDraw = this.avgDraw * 0.85 + (performance.now() - t0) * 0.15;
+        this.avgGap = this.avgGap > 0 ? this.avgGap * 0.9 + gap * 0.1 : gap;
+        if (this.adaptive()) this.tune(now, interval || 1000 / 60);
 
         if (this.needsFrame()) {
             this.raf = requestAnimationFrame(this.frame);
@@ -850,6 +1146,46 @@ export class FxEngine {
             this.scheduleIdle();
         }
     };
+
+    /**
+     * Adaptive quality: steps the frame cap (60 / 45 / 30) and, with quality "auto", the resolution factor
+     * (1 / 0.85 / 0.7) down while drawing is expensive or frames arrive late, and slowly back up when it is cheap.
+     */
+    private tune(now: number, target: number) {
+        const late = this.avgDraw > 4 || this.avgGap > target * 1.4;
+        this.lateRun = late ? this.lateRun + 1 : 0;
+        this.calmRun = !late && this.avgDraw < 2.2 && this.avgGap < target * 1.15 ? this.calmRun + 1 : 0;
+        if (now - this.lastStep < STEP_COOLDOWN) return;
+        if (this.lateRun > 30 && this.level < AUTO_FPS.length - 1) {
+            this.level++;
+        } else if (this.calmRun > 300 && this.level > 0) {
+            this.level--;
+        } else {
+            return;
+        }
+        this.lastStep = now;
+        this.lateRun = 0;
+        this.calmRun = 0;
+        if (this.quality === "auto") this.rescale();
+    }
+
+    /** Clears only the boxes the previous frame drew into, or everything when that got too expensive. */
+    private clearDirty(ctx: CanvasRenderingContext2D, trk: DirtyRects) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
+        if (trk.needsFull(this.w * this.h)) {
+            ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            return;
+        }
+        const s = this.scale;
+        const r = trk.list();
+        const n = trk.count();
+        for (let i = 0; i < n; i += 4) {
+            const x0 = Math.floor(r[i] * s);
+            const y0 = Math.floor(r[i + 1] * s);
+            ctx.clearRect(x0, y0, Math.ceil(r[i + 2] * s) - x0 + 1, Math.ceil(r[i + 3] * s) - y0 + 1);
+        }
+    }
 
     /* ------------------------------------------------------------ helpers */
 
@@ -875,7 +1211,7 @@ export class FxEngine {
 
     /** Draws an image centered at x,y (CSS px) with optional rotation and vertical flip scale. */
     private put(ctx: CanvasRenderingContext2D, img: CanvasImageSource, x: number, y: number, w: number, h: number, rot: number, sy: number) {
-        const d = this.dpr;
+        const d = this.scale;
         if (rot === 0 && sy === 1) {
             ctx.setTransform(d, 0, 0, d, x * d, y * d);
         } else {
@@ -884,14 +1220,35 @@ export class FxEngine {
             ctx.setTransform(c, s, -s * sy, c * sy, x * d, y * d);
         }
         ctx.drawImage(img, -w / 2, -h / 2, w, h);
+        const { trk } = this;
+        if (trk) {
+            // a rotated sprite needs its half diagonal, an upright one just half its size
+            const e = (rot === 0 ? Math.max(w, h) / 2 : Math.max(w, h) * 0.71) + RECT_PAD;
+            trk.add(x - e, y - e, x + e, y + e);
+        }
     }
 
     private base(ctx: CanvasRenderingContext2D) {
-        ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+        ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
+    }
+
+    /** Registers a box (center + half extents, CSS px) for the next dirty-rect clear. */
+    private markBox(x: number, y: number, ex: number, ey: number) {
+        const { trk } = this;
+        if (trk) trk.add(x - ex, y - ey, x + ex, y + ey);
+    }
+
+    /** Registers the bounding box of a line segment. */
+    private markSeg(x0: number, y0: number, x1: number, y1: number, pad: number) {
+        const { trk } = this;
+        if (!trk) return;
+        const p = pad + RECT_PAD;
+        trk.add(Math.min(x0, x1) - p, Math.min(y0, y1) - p, Math.max(x0, x1) + p, Math.max(y0, y1) + p);
     }
 
     private emit(shape: number, grp: string, x: number, y: number, vx: number, vy: number, life: number, size: number): Bp | null {
-        if (this.bursts.length >= MAX_BURST) return null;
+        if (this.bursts.length >= MAX_BURST || this.spawned >= MAX_SPAWN) return null;
+        this.spawned++;
         const p: Bp = {
             x, y, vx, vy, age: 0, life, size,
             rot: Math.random() * TAU, vr: 0, g: 0, drag: 1,
@@ -1141,6 +1498,8 @@ export class FxEngine {
         if (kind === "none") return;
         const op = cfg.opacity / 100;
         const sz = cfg.size / 100;
+        // these cover most of the viewport anyway: one full clear beats hundreds of small ones
+        if (this.trk && (kind === "matrix" || kind === "rain" || this.amb.length > FULL_PARTICLES)) this.trk.markFull();
         if (kind === "matrix") {
             this.drawMatrix(ctx, op, sz);
             return;
@@ -1149,7 +1508,7 @@ export class FxEngine {
         const pal = this.pal(kind);
         const pn = pal.length;
         const arr = this.amb;
-        const d = this.dpr;
+        const d = this.scale;
 
         if (kind === "rain") {
             this.base(ctx);
@@ -1185,6 +1544,7 @@ export class FxEngine {
                 const rw = p.size * sz;
                 const rh = rw * 0.6;
                 ctx.fillRect(-rw / 2, -rh / 2, rw, rh);
+                this.markBox(p.x, p.y, rw * 0.6 + RECT_PAD, rw * 0.6 + RECT_PAD);
             }
             return;
         }
@@ -1388,9 +1748,11 @@ export class FxEngine {
                 if (k <= 0) continue;
                 ctx.globalAlpha = k * 0.9;
                 ctx.fillStyle = pal[(p.c * pal.length) | 0].css;
+                const r = 1 + 4.5 * k;
                 ctx.beginPath();
-                ctx.arc(p.x, p.y, 1 + 4.5 * k, 0, TAU);
+                ctx.arc(p.x, p.y, r, 0, TAU);
                 ctx.fill();
+                this.markBox(p.x, p.y, r + RECT_PAD, r + RECT_PAD);
             }
             return;
         }
@@ -1404,11 +1766,13 @@ export class FxEngine {
                 if (k <= 0) continue;
                 ctx.globalAlpha = Math.min(1, k * 1.2);
                 ctx.strokeStyle = `hsl(${Math.round(this.trailHue + (n - i) * 14) % 360},95%,62%)`;
-                ctx.lineWidth = 1 + 6 * k;
+                const lw = 1 + 6 * k;
+                ctx.lineWidth = lw;
                 ctx.beginPath();
                 ctx.moveTo(a.x, a.y);
                 ctx.lineTo(b.x, b.y);
                 ctx.stroke();
+                this.markSeg(a.x, a.y, b.x, b.y, lw);
             }
             return;
         }
@@ -1425,11 +1789,14 @@ export class FxEngine {
                 const k = (i / n) * Math.max(0, 1 - b.age / life);
                 if (k <= 0) continue;
                 ctx.globalAlpha = pass ? k * 0.9 : k * 0.7;
-                ctx.lineWidth = (pass ? 3 : 9) * k + 0.5;
+                const lw = (pass ? 3 : 9) * k + 0.5;
+                ctx.lineWidth = lw;
                 ctx.beginPath();
                 ctx.moveTo(a.x, a.y);
                 ctx.lineTo(b.x, b.y);
                 ctx.stroke();
+                // only the wide first pass is tracked; the thin one stays inside that box
+                if (!pass) this.markSeg(a.x, a.y, b.x, b.y, lw);
             }
         }
         const head = pts[n - 1];
@@ -1447,7 +1814,7 @@ export class FxEngine {
         const k = 1 - Math.pow(0.78, dt);
         this.ringX += (this.mx - this.ringX) * k;
         this.ringY += (this.my - this.ringY) * k;
-        if (Math.abs(this.mx - this.ringX) + Math.abs(this.my - this.ringY) <= 0.3) {
+        if (Math.abs(this.mx - this.ringX) + Math.abs(this.my - this.ringY) <= 0.25) {
             this.ringX = this.mx;
             this.ringY = this.my;
         }
@@ -1466,11 +1833,13 @@ export class FxEngine {
         ctx.beginPath();
         ctx.arc(this.ringX, this.ringY, 16, 0, TAU);
         ctx.stroke();
+        // the halo sprite (64px) already covers the stroked circle
         ctx.globalAlpha = 1;
         ctx.fillStyle = mix(col, WHITE, 0.6).css;
         ctx.beginPath();
         ctx.arc(this.mx, this.my, 2.5, 0, TAU);
         ctx.fill();
+        this.markBox(this.mx, this.my, 3 + RECT_PAD, 3 + RECT_PAD);
     }
 
     /* ------------------------------------------------------------ clicks */
@@ -1580,9 +1949,14 @@ export class FxEngine {
             p.x += p.vx * dt;
             p.y += p.vy * dt;
             p.rot += p.vr * dt;
-            if (p.shape === SH_ROCKET && Math.random() < 0.6) {
-                const tail = this.emit(SH_DOT, "firework", p.x + rand(-1, 1), p.y, rand(-0.3, 0.3), rand(0.2, 0.8), rand(10, 16), rand(0.8, 1.4));
-                if (tail) tail.c = p.c;
+            if (p.shape === SH_ROCKET) {
+                // ~0.6 tail particles per 60 fps frame, independent of the real frame rate
+                for (let n = 0.6 * dt; n > 0; n--) {
+                    if (n < 1 && Math.random() >= n) break;
+                    const tail = this.emit(SH_DOT, "firework", p.x + rand(-1, 1), p.y, rand(-0.3, 0.3), rand(0.2, 0.8), rand(10, 16), rand(0.8, 1.4));
+                    if (!tail) break;
+                    tail.c = p.c;
+                }
             }
             arr[j++] = p;
         }
@@ -1619,6 +1993,7 @@ export class FxEngine {
                     ctx.moveTo(p.x, p.y);
                     ctx.lineTo(p.x - p.vx * 3, p.y - p.vy * 3);
                     ctx.stroke();
+                    this.markSeg(p.x, p.y, p.x - p.vx * 3, p.y - p.vy * 3, p.size);
                     break;
                 }
                 case SH_STAR: {
@@ -1634,7 +2009,7 @@ export class FxEngine {
                     break;
                 }
                 case SH_RECT: {
-                    const d = this.dpr;
+                    const d = this.scale;
                     const flip = Math.cos(p.age * 0.25 + p.phase);
                     const c = Math.cos(p.rot) * d;
                     const sn = Math.sin(p.rot) * d;
@@ -1642,6 +2017,7 @@ export class FxEngine {
                     ctx.globalAlpha = Math.min(1, k * 3);
                     ctx.fillStyle = col.css;
                     ctx.fillRect(-p.size / 2, -p.size * 0.3, p.size, p.size * 0.6);
+                    this.markBox(p.x, p.y, p.size * 0.6 + RECT_PAD, p.size * 0.6 + RECT_PAD);
                     break;
                 }
                 case SH_BUBBLE: {
@@ -1656,10 +2032,12 @@ export class FxEngine {
                     this.base(ctx);
                     ctx.globalAlpha = k * 0.9;
                     ctx.strokeStyle = col.css;
-                    ctx.lineWidth = 3 * k + 0.5;
+                    const lw = 3 * k + 0.5;
+                    ctx.lineWidth = lw;
                     ctx.beginPath();
                     ctx.arc(p.x, p.y, r, 0, TAU);
                     ctx.stroke();
+                    this.markBox(p.x, p.y, r + lw + RECT_PAD, r + lw + RECT_PAD);
                     break;
                 }
                 case SH_ROCKET: {
@@ -1675,6 +2053,7 @@ export class FxEngine {
                     ctx.moveTo(p.x, p.y);
                     ctx.lineTo(p.x - p.vx * 4, p.y - p.vy * 4);
                     ctx.stroke();
+                    this.markSeg(p.x, p.y, p.x - p.vx * 4, p.y - p.vy * 4, p.size);
                     break;
                 }
             }

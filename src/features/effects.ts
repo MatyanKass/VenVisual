@@ -89,7 +89,23 @@ export const effectFeatures: Feature[] = [
     },
     { id: "fxPauseUnfocused", cat: "effects", group: "Общее", kind: "toggle", label: "Пауза, когда Discord не в фокусе", desc: "Экономит ресурсы", default: true },
     {
-        id: "fxFps", cat: "effects", group: "Общее", kind: "select", label: "Ограничение FPS эффектов", default: "60",
-        options: [{ value: "30", label: "30 FPS" }, { value: "60", label: "60 FPS" }, { value: "0", label: "Без ограничения" }]
+        id: "fxFps", cat: "effects", group: "Общее", kind: "select", label: "Ограничение FPS эффектов", default: "auto",
+        desc: "«Авто» сам снижает частоту, если кадры начинают опаздывать",
+        options: [
+            { value: "auto", label: "Авто (рекомендуется)" },
+            { value: "30", label: "30 FPS" },
+            { value: "60", label: "60 FPS" },
+            { value: "0", label: "Без ограничения (тяжело для видеокарты)" }
+        ]
+    },
+    {
+        id: "fxQuality", cat: "effects", group: "Общее", kind: "select", label: "Качество отрисовки эффектов", default: "auto",
+        desc: "Разрешение холста с частицами. Чем ниже, тем меньше нагрузка на видеокарту",
+        options: [
+            { value: "auto", label: "Авто (рекомендуется)" },
+            { value: "high", label: "Высокое (как экран)" },
+            { value: "medium", label: "Среднее" },
+            { value: "low", label: "Низкое (максимум производительности)" }
+        ]
     }
 ];

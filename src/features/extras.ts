@@ -43,20 +43,25 @@ export const extraFeatures: Feature[] = [
 
     /* ---------- fun ---------- */
     {
-        id: "windowFrame", cat: "extras", group: "Приколы", kind: "select", label: "Светящаяся рамка окна", default: "none",
+        id: "windowFrame", cat: "extras", group: "Приколы", kind: "select", label: "Светящаяся рамка окна", default: "none", heavy: true,
+        desc: "Анимированные рамки перерисовывают всё окно",
         options: [{ value: "none", label: "Нет" }, { value: "accent", label: "Цвет акцента" }, { value: "rainbow", label: "Бегущая радуга" }, { value: "breathing", label: "Дышащая" }],
         css: mode => {
             if (mode === "none") return "";
             const base = "body::after";
             const frame = "content: \"\"; position: fixed; inset: 0; pointer-events: none; z-index: 2147482000; border-radius: 0;";
             if (mode === "accent") return `${base} { ${frame} box-shadow: inset 0 0 0 1px ${mixAccent(80)}, inset 0 0 22px ${mixAccent(35)}; }`;
-            if (mode === "breathing") return `@keyframes vv-breathe { 0%,100% { box-shadow: inset 0 0 0 1px ${mixAccent(40)}, inset 0 0 8px ${mixAccent(15)}; } 50% { box-shadow: inset 0 0 0 2px ${ACCENT2}, inset 0 0 36px ${mixAccent(45, ACCENT2)}; } } ${base} { ${frame} animation: vv-breathe 4s ease-in-out infinite; }`;
-            return `@property --vv-frame { syntax: "<angle>"; inherits: false; initial-value: 0deg; } @keyframes vv-frame-spin { to { --vv-frame: 360deg; } }
-${base} { ${frame} padding: 2px; background: conic-gradient(from var(--vv-frame), #ff5f6d, #ffc371, #7ed957, #2ad4c4, #6c8cff, #d66cff, #ff5f6d); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; animation: vv-frame-spin 5s linear infinite; }`;
+            // both animate a compositor-friendly property (opacity / hue-rotate) over a frame that is
+            // painted once, instead of re-painting a full-window box-shadow or conic gradient every frame
+            if (mode === "breathing") return `@keyframes vv-breathe { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
+${base} { ${frame} box-shadow: inset 0 0 0 2px ${ACCENT2}, inset 0 0 32px ${mixAccent(45, ACCENT2)}; animation: vv-breathe 4s ease-in-out infinite; will-change: opacity; }`;
+            return `@keyframes vv-frame-hue { to { filter: hue-rotate(360deg); } }
+${base} { ${frame} padding: 2px; background: conic-gradient(#ff5f6d, #ffc371, #7ed957, #2ad4c4, #6c8cff, #d66cff, #ff5f6d); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; animation: vv-frame-hue 6s linear infinite; will-change: filter; }`;
         }
     },
     {
-        id: "chatWatermark", cat: "extras", group: "Приколы", kind: "text", label: "Надпись-водяной знак в чате", placeholder: "МАТЯН", default: "",
+        id: "chatWatermark", cat: "extras", group: "Приколы", kind: "text", label: "Надпись-водяной знак в чате", placeholder: "МАТЯН", default: "", heavy: true,
+        desc: "Огромный текст под чатом перерисовывается при прокрутке",
         css: text => {
             const t = cssSafe(text?.trim() ?? "").replace(/'/g, "\\'");
             return t && `${S.messagesWrapper} { position: relative; }
@@ -71,5 +76,10 @@ ${S.messagesWrapper}::before { content: '${t}'; position: absolute; inset: 0; di
 
     /* ---------- control ---------- */
     { id: "panicHotkey", cat: "extras", group: "Управление", kind: "toggle", label: "Ctrl+Alt+V: быстро выключить и включить все эффекты", default: true },
-    { id: "perfMode", cat: "extras", group: "Управление", kind: "toggle", label: "Режим экономии", desc: "Выключает частицы, анимации и размытия, оставляет цвета", default: false }
+    {
+        id: "pauseAnimUnfocused", cat: "extras", group: "Управление", kind: "toggle", default: true,
+        label: "Останавливать анимации, когда окно не в фокусе",
+        desc: "Пока Discord позади другого окна, ничего не перерисовывается"
+    },
+    { id: "perfMode", cat: "extras", group: "Управление", kind: "toggle", label: "Режим экономии", desc: "Выключает частицы, анимации, размытия и счётчик FPS, оставляет цвета и часы", default: false }
 ];

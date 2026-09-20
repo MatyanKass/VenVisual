@@ -299,6 +299,42 @@ function Sections({ sections, values, onChange }: { sections: Section[]; values:
     );
 }
 
+/** heaviest settings, turned down by the "Ускорить" button; colors and layout are left alone */
+const ANIMATED_NAME_STYLES = new Set(["custom", "rainbow", "roleShine", "fire", "ice", "gold", "toxic", "neon"]);
+
+function speedUpPatch(v: Values): Values {
+    const p: Values = {
+        fxFps: "auto",
+        fxQuality: "low",
+        fxPauseUnfocused: true,
+        pauseAnimUnfocused: true,
+        glassPanels: false,
+        backdropBlur: 0,
+        kenBurns: false,
+        msgTextGlow: false,
+        attachmentHighlight: false,
+        linkMsgHighlight: false,
+        systemMsgDim: false,
+        inputGradientBorder: false,
+        partyMode: false,
+        chatWatermark: "",
+        grain: 0,
+        scanlines: 0,
+        selectedPulse: false,
+        voiceConnectedPulse: false,
+        avatarRingPulse: false,
+        jumboWiggle: false
+    };
+    if (v.particleCount > 40) p.particleCount = 40;
+    if (v.bgBlur > 10) p.bgBlur = 10;
+    if (v.mentionStyle === "pulse" || v.mentionStyle === "rainbow") p.mentionStyle = "accent";
+    if (v.windowFrame === "rainbow" || v.windowFrame === "breathing") p.windowFrame = "accent";
+    if (v.popupAnim === "blur") p.popupAnim = "pop";
+    if (v.msgAppear === "blur") p.msgAppear = "fade";
+    if (ANIMATED_NAME_STYLES.has(v.nameStyle)) p.nameStyle = "accent";
+    return p;
+}
+
 /* ---------- panel ---------- */
 
 export function Panel(): JSX.Element {
@@ -359,6 +395,18 @@ export function Panel(): JSX.Element {
     /* ----- actions ----- */
 
     const onRandom = () => replaceAll(randomValuesSafe());
+
+    const onSpeedUp = () => {
+        const patch = speedUpPatch(values);
+        const changedIds = Object.keys(patch).filter(id => values[id] !== patch[id]);
+        replaceAll({ ...values, ...patch });
+        showToast(
+            changedIds.length
+                ? `Ускорено: изменено ${changedIds.length} ${plural(changedIds.length, "настройка", "настройки", "настроек")}`
+                : "Всё уже настроено на быструю работу",
+            Toasts.Type.SUCCESS
+        );
+    };
 
     const onExport = () => {
         const json = JSON.stringify(diffFromDefaults(values), null, 2);
@@ -422,6 +470,7 @@ export function Panel(): JSX.Element {
                         </div>
                     </div>
                     <div className="vv-actions">
+                        <button type="button" className="vv-btn" onClick={onSpeedUp} title="Убрать самые тяжёлые эффекты, не трогая цвета и темы">⚡ Ускорить</button>
                         <button type="button" className="vv-btn vv-btn-primary" onClick={onRandom} title="Собрать случайный стиль из тем, фонов и эффектов">🎲 Случайный стиль</button>
                         <button type="button" className="vv-btn" onClick={onExport} title="Скопировать изменённые настройки в буфер обмена">📤 Экспорт</button>
                         <button type="button" className={"vv-btn" + (importOpen ? " vv-btn-active" : "")} onClick={() => setImportOpen(o => !o)} title="Вставить настройки из JSON">📥 Импорт</button>

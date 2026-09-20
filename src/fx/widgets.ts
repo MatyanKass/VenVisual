@@ -108,13 +108,20 @@ let styleEl: HTMLStyleElement | null = null;
 let root: HTMLDivElement | null = null;
 let currentKey: string | null = null;
 
-let timeEl: HTMLSpanElement | null = null;
-let dateEl: HTMLSpanElement | null = null;
-let timerEl: HTMLSpanElement | null = null;
-let fpsEl: HTMLSpanElement | null = null;
+/* cached text nodes: writing nodeValue keeps the node in place, textContent would replace it
+   and emit a childList mutation that wakes every observer watching the document */
+let timeText: Text | null = null;
+let dateText: Text | null = null;
+let timerText: Text | null = null;
+let fpsText: Text | null = null;
 
 let tickHandle: ReturnType<typeof setTimeout> | null = null;
 let rafHandle: number | null = null;
+
+/* what the current config asked for; the loops stay stopped while the window is hidden */
+let wantTicker = false;
+let wantFps = false;
+let visBound = false;
 
 let showSeconds = false;
 let showDate = false;
@@ -146,20 +153,21 @@ function formatSession(ms: number): string {
     return `⏱ ${h}:${pad2(m)}:${pad2(s)}`;
 }
 
-function setText(el: HTMLElement | null, text: string) {
-    if (el && el.textContent !== text) el.textContent = text;
+function setText(node: Text | null, text: string) {
+    if (node && node.nodeValue !== text) node.nodeValue = text;
 }
 
 function updateClockAndTimer() {
     const now = new Date();
-    if (timeEl) setText(timeEl, timeFormatter(showSeconds).format(now));
-    if (dateEl && showDate) setText(dateEl, dateFormatter().format(now));
-    if (timerEl) setText(timerEl, formatSession(now.getTime() - SESSION_START));
+    if (timeText) setText(timeText, timeFormatter(showSeconds).format(now));
+    if (dateText && showDate) setText(dateText, dateFormatter().format(now));
+    if (timerText) setText(timerText, formatSession(now.getTime() - SESSION_START));
 }
 
 /** self-rescheduling timeout aligned to the next second boundary (acts as a 1s interval) */
 function startTicker() {
     stopTicker();
+    if (!wantTicker || document.hidden) return;
     const loop = () => {
         updateClockAndTimer();
         tickHandle = setTimeout(loop, 1000 - (Date.now() % 1000) + 5);
@@ -176,13 +184,14 @@ function stopTicker() {
 
 function startFps() {
     stopFps();
+    if (!wantFps || document.hidden) return;
     let frames = 0;
     let last = performance.now();
     const frame = (now: number) => {
         frames++;
         const elapsed = now - last;
         if (elapsed >= 500) {
-            setText(fpsEl, `${Math.round((frames * 1000) / elapsed)} FPS`);
+            setText(fpsText, `${Math.round((frames * 1000) / elapsed)} FPS`);
             frames = 0;
             last = now;
         }
@@ -198,18 +207,45 @@ function stopFps() {
     }
 }
 
+/** a hidden window gets no widget updates at all: no interval, no animation frame loop */
+function onVisibility() {
+    if (document.hidden) {
+        stopTicker();
+        stopFps();
+        return;
+    }
+    startTicker();
+    startFps();
+}
+
+function bindVisibility(on: boolean) {
+    if (on === visBound) return;
+    visBound = on;
+    if (on) document.addEventListener("visibilitychange", onVisibility);
+    else document.removeEventListener("visibilitychange", onVisibility);
+}
+
 function makeItem(kind: string): HTMLSpanElement {
     const el = document.createElement("span");
     el.className = `vv-w-item vv-w-${kind}`;
     return el;
 }
 
+function makeText(parent: HTMLElement, initial = ""): Text {
+    const node = document.createTextNode(initial);
+    parent.append(node);
+    return node;
+}
+
 function teardown() {
+    wantTicker = false;
+    wantFps = false;
+    bindVisibility(false);
     stopTicker();
     stopFps();
     root?.remove();
     root = null;
-    timeEl = dateEl = timerEl = fpsEl = null;
+    timeText = dateText = timerText = fpsText = null;
     styleEl?.remove();
     styleEl = null;
     currentKey = null;
@@ -217,7 +253,7 @@ function teardown() {
 
 export function configureWidgets(cfg: WidgetConfig | null): void {
     if (!cfg || !(cfg.clock || cfg.sessionTimer || cfg.fps)) {
-        if (root || styleEl || tickHandle !== null || rafHandle !== null) teardown();
+        if (root || styleEl || visBound || tickHandle !== null || rafHandle !== null) teardown();
         return;
     }
 
@@ -242,11 +278,13 @@ export function configureWidgets(cfg: WidgetConfig | null): void {
         styleEl.textContent = WIDGETS_CSS;
     }
 
+    wantTicker = false;
+    wantFps = false;
     stopTicker();
     stopFps();
     root?.remove();
     document.getElementById(ROOT_ID)?.remove(); // stale leftover (e.g. hot reload)
-    timeEl = dateEl = timerEl = fpsEl = null;
+    timeText = dateText = timerText = fpsText = null;
 
     root = document.createElement("div");
     root.id = ROOT_ID;
@@ -258,31 +296,38 @@ export function configureWidgets(cfg: WidgetConfig | null): void {
 
     if (cfg.clock) {
         const item = makeItem("clock");
-        timeEl = document.createElement("span");
+        const timeEl = document.createElement("span");
         timeEl.className = "vv-w-time";
+        timeText = makeText(timeEl);
         item.append(timeEl);
         if (showDate) {
-            dateEl = document.createElement("span");
+            const dateEl = document.createElement("span");
             dateEl.className = "vv-w-date";
+            dateText = makeText(dateEl);
             item.append(dateEl);
         }
         root.append(item);
     }
 
     if (cfg.sessionTimer) {
-        timerEl = makeItem("timer");
-        root.append(timerEl);
+        const item = makeItem("timer");
+        timerText = makeText(item);
+        root.append(item);
     }
 
     if (cfg.fps) {
-        fpsEl = makeItem("fps");
-        fpsEl.textContent = "-- FPS";
-        root.append(fpsEl);
+        const item = makeItem("fps");
+        fpsText = makeText(item, "-- FPS");
+        root.append(item);
     }
 
+    updateClockAndTimer();
     (document.body ?? document.documentElement).append(root);
     currentKey = key;
 
-    if (cfg.clock || cfg.sessionTimer) startTicker();
-    if (cfg.fps) startFps();
+    wantTicker = cfg.clock || cfg.sessionTimer;
+    wantFps = cfg.fps;
+    bindVisibility(wantTicker || wantFps);
+    startTicker();
+    startFps();
 }

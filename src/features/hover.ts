@@ -24,7 +24,7 @@ function rowHover(target: string, v: Values): string {
         underline: `transform: translateX(${shift}px); background-color: transparent !important; box-shadow: inset 0 -2px 0 ${ACCENT} !important;`
     };
 
-    return `${target} { position: relative; ${TRANSITION} will-change: transform; }
+    return `${target} { position: relative; ${TRANSITION} }
 ${hov} { ${styles[v.hoverStyle] ?? styles.slide} }`;
 }
 
@@ -59,7 +59,7 @@ export const hoverFeatures: Feature[] = [
         ],
         css: (mode, v) => {
             if (!v.hoverEnabled || mode === "off") return "";
-            const hov = `${S.guildItem}:hover ${S.guildIcon.split(" ").pop()}`;
+            const hov = `${S.guildItem}:hover ${S.guildIconTail}`;
             const glow = `filter: drop-shadow(0 0 ${Math.round(v.hoverGlow / 2)}px ${mixAccent(75)});`;
             const base = `${S.guildIcon} { transition: transform var(--vv-speed) var(--vv-ease), filter var(--vv-speed) ease !important; }`;
             switch (mode) {
@@ -77,17 +77,19 @@ export const hoverFeatures: Feature[] = [
         css: (on, v) => on && `${S.channelSelected}, ${S.dmSelected} {
     transform: translateX(${Math.round(v.hoverShift / 2)}px);
     background: linear-gradient(90deg, ${mixAccent(30)}, ${mixAccent(8, ACCENT2)}) !important;
-    box-shadow: inset 3px 0 0 ${ACCENT} !important;
+    box-shadow: inset 3px 0 0 ${ACCENT}, 0 0 var(--vv-sel-glow, 0px) ${mixAccent(45)} !important;
 }`
     },
     {
         id: "selectedPulse", cat: "hover", group: "Открытый чат", kind: "toggle", label: "Пульсация открытого чата", default: false, dependsOn: "highlightSelected",
-        css: (on, v) => on && v.highlightSelected && `@keyframes vv-sel-pulse { 0%,100% { box-shadow: inset 3px 0 0 ${ACCENT}, 0 0 0 ${mixAccent(0)}; } 50% { box-shadow: inset 3px 0 0 ${ACCENT}, 0 0 14px ${mixAccent(45)}; } }
+        // the base box-shadow is !important (beats animations), so the animation drives a registered property it reads
+        css: (on, v) => on && v.highlightSelected && `@property --vv-sel-glow { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@keyframes vv-sel-pulse { 0%,100% { --vv-sel-glow: 0px; } 50% { --vv-sel-glow: 14px; } }
 ${S.channelSelected}, ${S.dmSelected} { animation: vv-sel-pulse 2.4s ease-in-out infinite; }`
     },
     {
         id: "selectedServerGlow", cat: "hover", group: "Открытый чат", kind: "toggle", label: "Свечение выбранного сервера", default: true,
-        css: on => on && `${S.guildItem}:has([class*="selected_"]) [class*="listItemWrapper_"] { filter: drop-shadow(0 0 6px ${mixAccent(70)}); }`
+        css: on => on && `${S.guildItem}:has(> [class*="wrapper_"] > [class*="selected_"], > span > [class*="selected_"]) ${S.guildIconTail} { filter: drop-shadow(0 0 6px ${mixAccent(70)}); }`
     },
     {
         id: "serverPillAccent", cat: "hover", group: "Открытый чат", kind: "toggle", label: "Полоска у сервера цветом акцента", default: true,

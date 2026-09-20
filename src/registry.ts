@@ -37,6 +37,10 @@ interface FeatureBase {
     group?: string;
     /** id of a toggle / select this option depends on; shown dimmed while it is off */
     dependsOn?: string;
+    /** extra condition for the option to have an effect (e.g. only for one select value); dimmed while false */
+    activeWhen?(v: Values): boolean;
+    /** hint shown while activeWhen is false */
+    activeHint?: string;
     /** noticeably heavier on weak PCs */
     heavy?: boolean;
     css?(value: any, v: Values, ctx: CssContext): string | false | undefined | null;

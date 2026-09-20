@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { ACCENT, ACCENT2, Feature, mixAccent, normalizeHex, Values } from "../registry";
+import { ACCENT, ACCENT2, Feature, normalizeHex, Values } from "../registry";
 import { S } from "../selectors";
 
 const MEMBER_NAME = `${S.membersWrap} [class*="nameAndDecorators_"] [class*="name_"]`;
@@ -20,6 +20,9 @@ const clipText = (gradient: string, extra = "") => `background-image: ${gradient
     -webkit-text-fill-color: transparent !important;
     ${extra}`;
 
+/** shapes cut with clip-path, which also cuts off box-shadow rings */
+const CLIPPED_SHAPES = new Set(["hexagon", "diamond", "heart"]);
+
 const SHAPES: Record<string, string> = {
     circle: "border-radius: 50% !important;",
     squircle: "border-radius: 32% !important;",
@@ -32,7 +35,8 @@ const SHAPES: Record<string, string> = {
 
 export const nameFeatures: Feature[] = [
     {
-        id: "nameStyle", cat: "names", group: "Ники", kind: "select", label: "Стиль ников", default: "none",
+        id: "nameStyle", cat: "names", group: "Ники", kind: "select", label: "Стиль ников", default: "none", heavy: true,
+        desc: "Переливающиеся стили анимируют каждый ник на экране",
         options: [
             { value: "none", label: "Обычные" },
             { value: "accent", label: "Градиент из акцентов" },
@@ -67,8 +71,8 @@ ${t} { color: #fff !important; animation: vv-neon 3s infinite; }`;
             }
         }
     },
-    { id: "nameColor1", cat: "names", group: "Ники", kind: "color", label: "Свой градиент: цвет 1", default: "#ff2bd6", dependsOn: "nameStyle" },
-    { id: "nameColor2", cat: "names", group: "Ники", kind: "color", label: "Свой градиент: цвет 2", default: "#00e5ff", dependsOn: "nameStyle" },
+    { id: "nameColor1", cat: "names", group: "Ники", kind: "color", label: "Свой градиент: цвет 1", default: "#ff2bd6", dependsOn: "nameStyle", activeWhen: v => v.nameStyle === "custom", activeHint: "Работает со стилем «Свой градиент»" },
+    { id: "nameColor2", cat: "names", group: "Ники", kind: "color", label: "Свой градиент: цвет 2", default: "#00e5ff", dependsOn: "nameStyle", activeWhen: v => v.nameStyle === "custom", activeHint: "Работает со стилем «Свой градиент»" },
     { id: "nameInMembers", cat: "names", group: "Ники", kind: "toggle", label: "Применять стиль и в списке участников", default: false },
     { id: "nameWeight", cat: "names", group: "Ники", kind: "slider", label: "Толщина ников", default: 500, min: 300, max: 900, step: 100, css: (w, v) => w !== 500 && `${nameTargets(v)} { font-weight: ${w} !important; }` },
     { id: "nameUppercase", cat: "names", group: "Ники", kind: "toggle", label: "Ники заглавными буквами", default: false, css: (on, v) => on && `${nameTargets(v)} { text-transform: uppercase; letter-spacing: .04em; }` },
@@ -116,17 +120,30 @@ ${t} { color: #fff !important; animation: vv-neon 3s infinite; }`;
     },
     {
         id: "avatarRing", cat: "names", group: "Аватары", kind: "toggle", label: "Кольцо цветом акцента вокруг аватарок", default: false,
-        css: on => on && `${S.chatAvatar} { box-shadow: 0 0 0 2px ${ACCENT}, 0 0 10px ${mixAccent(50)} !important; }`
+        activeWhen: v => !CLIPPED_SHAPES.has(v.avatarShape), activeHint: "Не видно у фигурных аватарок (шестиугольник, ромб, сердечко)",
+        // ring color / glow come from properties that avatarRingPulse animates (the box-shadow itself is !important)
+        css: on => on && `${S.chatAvatar} { box-shadow: 0 0 0 2px color-mix(in srgb, ${ACCENT}, ${ACCENT2} var(--vv-ring-mix, 0%)), 0 0 var(--vv-ring-glow, 10px) color-mix(in srgb, color-mix(in srgb, ${ACCENT}, ${ACCENT2} var(--vv-ring-mix, 0%)) 55%, transparent) !important; }`
     },
     {
         id: "avatarRingPulse", cat: "names", group: "Аватары", kind: "toggle", label: "Кольцо пульсирует", default: false, dependsOn: "avatarRing",
-        css: (on, v) => on && v.avatarRing && `@keyframes vv-ring { 0%,100% { box-shadow: 0 0 0 2px ${ACCENT}, 0 0 4px ${mixAccent(30)}; } 50% { box-shadow: 0 0 0 2px ${ACCENT2}, 0 0 16px ${mixAccent(70, ACCENT2)}; } } ${S.chatAvatar} { animation: vv-ring 2.5s ease-in-out infinite; }`
+        css: (on, v) => on && v.avatarRing && `@property --vv-ring-glow { syntax: "<length>"; inherits: false; initial-value: 10px; }
+@property --vv-ring-mix { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+@keyframes vv-ring { 0%,100% { --vv-ring-glow: 4px; --vv-ring-mix: 0%; } 50% { --vv-ring-glow: 16px; --vv-ring-mix: 100%; } }
+${S.chatAvatar} { animation: vv-ring 2.5s ease-in-out infinite; }`
     },
-    { id: "statusGlow", cat: "names", group: "Аватары", kind: "toggle", label: "Статусы (онлайн/не беспокоить) светятся", default: true, css: on => on && `${S.statusDot} { filter: drop-shadow(0 0 3px currentColor) drop-shadow(0 0 2px currentColor); }` },
+    {
+        id: "statusGlow", cat: "names", group: "Аватары", kind: "toggle", label: "Статусы (онлайн/не беспокоить) светятся", default: true,
+        // Discord colors the dot with the fill attribute, so currentColor has to be set per status first
+        css: on => on && `rect[mask*="svg-mask-status-online"] { color: var(--status-positive, #45a366); }
+rect[mask*="svg-mask-status-idle"] { color: var(--status-warning, #ffc04e); }
+rect[mask*="svg-mask-status-dnd"] { color: var(--status-danger, #da3e44); }
+rect[mask*="svg-mask-status-streaming"] { color: #9147ff; }
+${S.statusDot}:not([mask*="status-offline"]) { filter: drop-shadow(0 0 3px currentColor) drop-shadow(0 0 2px currentColor); }`
+    },
     {
         id: "speakingGlow", cat: "names", group: "Аватары", kind: "toggle", label: "Говорящие в голосовом светятся сильнее", default: true,
         css: on => on && `@keyframes vv-speak { 0%,100% { box-shadow: 0 0 0 2px #3ba55d, 0 0 6px rgba(59,165,93,.5); } 50% { box-shadow: 0 0 0 2px #3ba55d, 0 0 16px rgba(59,165,93,.9); } }
-[class*="voiceUser_"] [class*="avatarSpeaking_"], [class*="voiceUser_"] [class*="speaking_"][class*="avatar"], [class*="tile_"] [class*="speaking_"] { animation: vv-speak 1.2s ease-in-out infinite; border-radius: 50%; }`
+[class*="voiceUser_"] [class*="avatarSpeaking"], [class*="voiceUser_"] [class*="speaking_"][class*="avatar"], [class*="tile_"] [class*="speaking_"] { animation: vv-speak 1.2s ease-in-out infinite; border-radius: 50%; }`
     },
     { id: "hideDecorations", cat: "names", group: "Аватары", kind: "toggle", label: "Скрыть украшения аватарок", default: false, css: on => on && "[class*=\"avatarDecoration_\"] { display: none !important; }" },
     { id: "hideNameplates", cat: "names", group: "Аватары", kind: "toggle", label: "Скрыть анимированные таблички в списке участников", default: false, css: on => on && "[class*=\"nameplated_\"] > [class*=\"container_\"]:has(video, img) { display: none !important; }" },

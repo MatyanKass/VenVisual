@@ -10,6 +10,14 @@ import { S } from "../selectors";
 const hide = (id: string, label: string, selector: string, def = false, desc?: string): Feature =>
     ({ id, cat: "interface", group: "Скрыть лишнее", kind: "toggle", label, desc, default: def, css: on => on && `${selector} { display: none !important; }` });
 
+/** "Inter, Nunito" -> "Inter", "Nunito" (each family quoted separately) */
+const fontList = (input: unknown) => cssSafe(String(input ?? ""))
+    .split(",")
+    .map(s => s.trim().replace(/['"]/g, ""))
+    .filter(Boolean)
+    .map(s => `"${s}"`)
+    .join(", ");
+
 export const interfaceFeatures: Feature[] = [
     /* ---------- shape & fonts ---------- */
     {
@@ -17,26 +25,29 @@ export const interfaceFeatures: Feature[] = [
         css: r => `:root { --vv-radius: ${r}px; }
 ${S.channel}, ${S.dm}, ${S.member} { border-radius: ${Math.min(r, 14)}px !important; }
 ${S.chatInput} [class*="scrollableContainer_"], ${S.chatInput} > [class*="inner_"] { border-radius: ${r}px !important; }
-${S.embed}, ${S.image}, [class*="messageAttachment_"], ${S.menu}, ${S.layerContainer} ${S.dialog}, ${S.codeBlock} { border-radius: ${r}px !important; }
+${S.embed}, ${S.image}, ${S.messageLi} :is([class*="attachment_"], [class*="attachmentContainer_"]), ${S.menu}, ${S.layerContainer} ${S.dialog}, ${S.codeBlock} { border-radius: ${r}px !important; }
 ${S.message} { border-radius: ${Math.min(r, 12)}px; }`
     },
     {
         id: "fontFamily", cat: "interface", group: "Форма и шрифты", kind: "text", label: "Шрифт интерфейса", desc: "Название установленного шрифта, например Inter, Nunito, Comic Sans MS", placeholder: "Inter", default: "",
         css: f => {
-            const font = cssSafe(f?.trim() ?? "");
-            return font && `:root, .theme-dark, .theme-light { --font-primary: "${font}", "gg sans", sans-serif !important; --font-display: "${font}", "gg sans", sans-serif !important; --font-headline: "${font}", "gg sans", sans-serif !important; }
-body, input, textarea, button { font-family: "${font}", "gg sans", sans-serif; }`;
+            const font = fontList(f);
+            return font && `:root, .theme-dark, .theme-light { --font-primary: ${font}, "gg sans", sans-serif !important; --font-display: ${font}, "gg sans", sans-serif !important; --font-headline: ${font}, "gg sans", sans-serif !important; }
+body, input, textarea, button { font-family: ${font}, "gg sans", sans-serif; }`;
         }
     },
     {
         id: "codeFont", cat: "interface", group: "Форма и шрифты", kind: "text", label: "Шрифт для кода", placeholder: "JetBrains Mono", default: "",
         css: f => {
-            const font = cssSafe(f?.trim() ?? "");
-            return font && `:root, .theme-dark, .theme-light { --font-code: "${font}", Consolas, monospace !important; } code, pre, ${S.inlineCode} { font-family: "${font}", Consolas, monospace !important; }`;
+            const font = fontList(f);
+            return font && `:root, .theme-dark, .theme-light { --font-code: ${font}, Consolas, monospace !important; } code, pre, ${S.inlineCode} { font-family: ${font}, Consolas, monospace !important; }`;
         }
     },
     { id: "animSpeed", cat: "interface", group: "Форма и шрифты", kind: "slider", label: "Длительность всех анимаций", default: 200, min: 60, max: 800, step: 10, unit: " мс" },
-    { id: "smoothScroll", cat: "interface", group: "Форма и шрифты", kind: "toggle", label: "Плавная прокрутка", default: false, css: on => on && `${S.scroller} { scroll-behavior: smooth; }` },
+    {
+        id: "smoothScroll", cat: "interface", group: "Форма и шрифты", kind: "toggle", label: "Плавная прокрутка", desc: "Кроме самого чата: там она мешает подгрузке истории", default: false,
+        css: on => on && `${S.scroller}:not(${S.messagesWrapper} *) { scroll-behavior: smooth; }`
+    },
 
     /* ---------- scrollbars ---------- */
     {
@@ -52,14 +63,20 @@ body, input, textarea, button { font-family: "${font}", "gg sans", sans-serif; }
             if (mode === "default") return "";
             if (mode === "hidden") return `::-webkit-scrollbar { width: 0 !important; height: 0 !important; } ${S.scroller} { scrollbar-width: none !important; }`;
             const thumb = mode === "gradient" ? `linear-gradient(180deg, ${ACCENT}, ${ACCENT2})` : mixAccent(55);
-            return `::-webkit-scrollbar { width: ${w}px !important; height: ${w}px !important; }
-::-webkit-scrollbar-thumb { background: ${thumb} !important; border-radius: ${w}px !important; border: none !important; min-height: 40px; }
-::-webkit-scrollbar-thumb:hover { background: ${ACCENT} !important; }
-::-webkit-scrollbar-track { background: transparent !important; border: none !important; }
-${S.scroller} { scrollbar-color: ${mixAccent(55)} transparent !important; }`;
+            // Chromium 121+ ignores ::-webkit-scrollbar* once scrollbar-color / scrollbar-width are set, so force them back to auto.
+            // Scrollers Discord hides on purpose (none_) are left alone.
+            const bar = ':not([class*="none_"])';
+            return `${S.scroller} { scrollbar-color: auto !important; scrollbar-width: auto !important; }
+${bar}::-webkit-scrollbar { width: ${w}px !important; height: ${w}px !important; }
+${bar}::-webkit-scrollbar-thumb { background: ${thumb} !important; border-radius: ${w}px !important; border: none !important; min-height: 40px; }
+${bar}::-webkit-scrollbar-thumb:hover { background: ${ACCENT} !important; }
+${bar}::-webkit-scrollbar-track { background: transparent !important; border: none !important; }`;
         }
     },
-    { id: "scrollbarWidth", cat: "interface", group: "Полосы прокрутки", kind: "slider", label: "Толщина полос прокрутки", default: 6, min: 2, max: 16, unit: " px", dependsOn: "scrollbarStyle" },
+    {
+        id: "scrollbarWidth", cat: "interface", group: "Полосы прокрутки", kind: "slider", label: "Толщина полос прокрутки", default: 6, min: 2, max: 16, unit: " px", dependsOn: "scrollbarStyle",
+        activeWhen: v => v.scrollbarStyle === "accent" || v.scrollbarStyle === "gradient", activeHint: "Работает с полосами «Цветом акцента» и «Градиентные»"
+    },
 
     /* ---------- chat input ---------- */
     {
@@ -72,7 +89,9 @@ ${S.chatInput}:focus-within { box-shadow: 0 0 0 1px ${mixAccent(70)}, 0 0 18px $
         css: on => on && `@property --vv-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 @keyframes vv-spin-angle { to { --vv-angle: 360deg; } }
 ${S.chatInput} { position: relative; }
-${S.chatInput}::before { content: ""; position: absolute; inset: -2px; border-radius: calc(var(--vv-radius, 8px) + 2px); padding: 2px; background: conic-gradient(from var(--vv-angle), ${ACCENT}, ${ACCENT2}, ${ACCENT}); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; animation: vv-spin-angle 4s linear infinite; pointer-events: none; z-index: 0; }`
+${S.chatInput}::before { content: ""; position: absolute; inset: -2px; border-radius: calc(var(--vv-radius, 8px) + 2px); padding: 2px; background: conic-gradient(from var(--vv-angle), ${ACCENT}, ${ACCENT2}, ${ACCENT}); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; z-index: 0; }
+/* the gradient only spins while you are actually writing: otherwise it would repaint the input box forever */
+${S.chatInput}:focus-within::before, ${S.chatInput}:hover::before { animation: vv-spin-angle 4s linear infinite; }`
     },
     {
         id: "inputPlaceholder", cat: "interface", group: "Поле ввода", kind: "text", label: "Свой текст-подсказка в поле ввода", placeholder: "Напиши что-нибудь красивое…", default: "",
@@ -83,8 +102,9 @@ ${S.chatInput}::before { content: ""; position: absolute; inset: -2px; border-ra
     },
 
     /* ---------- hide stuff ---------- */
-    hide("hideGiftButton", "Кнопку подарка в поле ввода", `${S.chatInputButtons} > :has([aria-label="Отправить подарок"], [aria-label="Send a gift"], [class*="giftButton"])`, true),
-    hide("hideGifButton", "Кнопку GIF", `${S.chatInputButtons} > :has([aria-label="Открыть меню GIF"], [aria-label="Open GIF picker"])`),
+    // gift: the only plain container_ before the expression picker buttons; GIF: the picker button that is neither stickers nor emoji
+    hide("hideGiftButton", "Кнопку подарка в поле ввода", `${S.chatInputButtons} > :is(:has([aria-label="Отправить подарок"], [aria-label="Send a gift"]), [class*="container_"]:not([class*="buttonContainer_"]):has(~ .expression-picker-chat-input-button))`, true),
+    hide("hideGifButton", "Кнопку GIF", `${S.chatInputButtons} > :is(:has([aria-label="Открыть меню GIF"], [aria-label="Open GIF picker"]), .expression-picker-chat-input-button:not(:has([class*="stickerButton_"], [class*="emojiButton_"])))`),
     hide("hideStickerButton", "Кнопку стикеров", `${S.chatInputButtons} > :has([aria-label="Открыть меню выбора стикеров"], [aria-label="Open sticker picker"], [class*="stickerButton_"])`),
     hide("hideAppsButton", "Кнопку «Приложения»", ".app-launcher-entrypoint"),
     hide("hideStoreLinks", "Nitro, Магазин и Квесты в списке ЛС", S.dmStoreLinks, true),
@@ -148,8 +168,9 @@ button[class*="colorBrand_"]:hover, button[class*="lookFilled_"]:hover { box-sha
                 flip: "from { opacity: 0; transform: perspective(600px) rotateX(-18deg); }",
                 blur: "from { opacity: 0; filter: blur(8px); }"
             };
-            return frames[mode] && `@keyframes vv-pop-in { ${frames[mode]} to { opacity: 1; transform: none; filter: none; } }
-${S.menu}, ${S.layerContainer} ${S.dialog} { animation: vv-pop-in var(--vv-speed) var(--vv-ease) both; }`;
+            // "backwards": nothing persists after the entry, so Discord's own close animations still work
+            return frames[mode] && `@keyframes vv-pop-in { ${frames[mode]} }
+${S.menu}, ${S.layerContainer} ${S.dialog} { animation: vv-pop-in var(--vv-speed) var(--vv-ease) backwards; }`;
         }
     },
     {

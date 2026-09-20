@@ -4,17 +4,28 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { ACCENT, ACCENT2, Feature, mixAccent, normalizeHex } from "../registry";
+import { ACCENT, ACCENT2, Feature, mixAccent, normalizeHex, Values } from "../registry";
 import { S } from "../selectors";
 
-const toggle = (id: string, group: string, label: string, def: boolean, css: string, desc?: string): Feature =>
-    ({ id, cat: "messages", group, kind: "toggle", label, desc, default: def, css: on => on && css });
+const toggle = (id: string, group: string, label: string, def: boolean, css: string, desc?: string, heavy?: boolean): Feature =>
+    ({ id, cat: "messages", group, kind: "toggle", label, desc, heavy, default: def, css: on => on && css });
+
+/**
+ * Several features mark a message with a stripe / glow. Instead of each one overwriting box-shadow,
+ * they set their own variable and this single rule layers them (first = on top).
+ */
+export function messageShadowCss(v: Values): string {
+    const used = v.msgHover || v.attachmentHighlight || v.linkMsgHighlight || v.kwEnabled || v.mentionStyle === "pulse";
+    if (!used) return "";
+    const none = "0 0 #0000";
+    return `${S.message} { box-shadow: var(--vv-ms-hover, ${none}), var(--vv-ms-att, ${none}), var(--vv-ms-kw, ${none}), var(--vv-ms-link, ${none}), inset 0 0 var(--vv-mention-glow, 0px) var(--vv-mention-glow-color, #0000) !important; }`;
+}
 
 export const messageFeatures: Feature[] = [
     /* ---------- look ---------- */
     toggle("msgHover", "Вид сообщений", "Подсветка сообщения при наведении", true,
         `${S.message} { transition: background-color var(--vv-speed) ease, box-shadow var(--vv-speed) ease !important; }
-${S.message}:hover { background-color: ${mixAccent(6)} !important; box-shadow: inset 2px 0 0 ${ACCENT}; }`),
+${S.message}:hover { background-color: ${mixAccent(6)} !important; --vv-ms-hover: inset 2px 0 0 ${ACCENT}; }`),
     toggle("msgBubbles", "Вид сообщений", "Сообщения карточками", false,
         `${S.message} { background: color-mix(in srgb, var(--background-surface-high, #2b2d31) 45%, transparent); margin: 2px 12px 2px 8px !important; border-radius: var(--vv-radius, 10px); }
 ${S.messageGroupStart} { margin-top: 10px !important; }`,
@@ -37,12 +48,14 @@ ${S.messageGroupStart} { margin-top: 10px !important; }`,
                 pop: "from { opacity: 0; transform: scale(.94); } 60% { transform: scale(1.01); }",
                 blur: "from { opacity: 0; filter: blur(6px); }"
             };
-            return frames[mode] && `@keyframes vv-msg-in { ${frames[mode]} to { opacity: 1; transform: none; filter: none; } }
-${S.messageLi} { animation: vv-msg-in calc(var(--vv-speed) * 1.5) var(--vv-ease) both; }`;
+            // fill "backwards": nothing is kept after the entry animation, so opacity / transform from other features still apply
+            return frames[mode] && `@keyframes vv-msg-in { ${frames[mode]} }
+${S.messageLi} { animation: vv-msg-in calc(var(--vv-speed) * 1.5) var(--vv-ease) backwards; }`;
         }
     },
     {
-        id: "mentionStyle", cat: "messages", group: "Вид сообщений", kind: "select", label: "Сообщения с упоминанием тебя", default: "accent",
+        id: "mentionStyle", cat: "messages", group: "Вид сообщений", kind: "select", label: "Сообщения с упоминанием тебя", default: "accent", heavy: true,
+        desc: "Пульс и радуга анимируются на каждом таком сообщении в истории",
         options: [
             { value: "off", label: "Как в Discord" },
             { value: "accent", label: "Градиент цветом акцента" },
@@ -52,7 +65,7 @@ ${S.messageLi} { animation: vv-msg-in calc(var(--vv-speed) * 1.5) var(--vv-ease)
         css: mode => {
             if (mode === "off") return "";
             const base = `${S.mentioned} { background: linear-gradient(90deg, ${mixAccent(22, ACCENT2)}, ${mixAccent(4)}) !important; } ${S.mentioned}::before { background: ${ACCENT2} !important; width: 3px !important; }`;
-            if (mode === "pulse") return `${base} @keyframes vv-mention { 0%,100% { box-shadow: inset 0 0 0 transparent; } 50% { box-shadow: inset 0 0 22px ${mixAccent(30, ACCENT2)}; } } ${S.mentioned} { animation: vv-mention 2.2s ease-in-out infinite; }`;
+            if (mode === "pulse") return `${base} @property --vv-mention-glow { syntax: "<length>"; inherits: false; initial-value: 0px; } @keyframes vv-mention { 0%,100% { --vv-mention-glow: 0px; } 50% { --vv-mention-glow: 22px; } } ${S.mentioned} { --vv-mention-glow-color: ${mixAccent(30, ACCENT2)}; animation: vv-mention 2.2s ease-in-out infinite; }`;
             if (mode === "rainbow") return `${base} @keyframes vv-rainbow-bg { to { background-position: 0 200%; } } ${S.mentioned}::before { background: linear-gradient(180deg, #ff5f6d, #ffc371, #7ed957, #2ad4c4, #6c8cff, #d66cff, #ff5f6d) !important; background-size: 100% 200% !important; animation: vv-rainbow-bg 2s linear infinite; }`;
             return base;
         }
@@ -60,16 +73,16 @@ ${S.messageLi} { animation: vv-msg-in calc(var(--vv-speed) * 1.5) var(--vv-ease)
     toggle("hideChatAvatars", "Вид сообщений", "Скрыть аватарки в чате", false,
         `${S.chatAvatar} { display: none !important; } ${S.message} [class*="contents_"] { padding-left: 0 !important; }`),
     toggle("attachmentHighlight", "Вид сообщений", "Отмечать сообщения с картинками и файлами", false,
-        `${S.messageLi}:has([class*="imageWrapper_"], [class*="attachment_"]) > [class*="message_"] { box-shadow: inset 2px 0 0 ${ACCENT2}; }`),
+        `${S.messageLi}:has([class*="imageWrapper_"], [class*="attachment_"]) > [class*="message_"] { --vv-ms-att: inset 2px 0 0 ${ACCENT2}; }`, "Discord пересчитывает такие правила при каждом изменении в чате", true),
     toggle("linkMsgHighlight", "Вид сообщений", "Отмечать сообщения со ссылками", false,
-        `${S.messageLi}:has(${S.anchor}) > [class*="message_"] { box-shadow: inset 2px 0 0 color-mix(in srgb, ${ACCENT} 60%, ${ACCENT2}); }`),
+        `${S.messageLi}:has(${S.anchor}) > [class*="message_"] { --vv-ms-link: inset 4px 0 0 color-mix(in srgb, ${ACCENT} 60%, ${ACCENT2}); }`, "Discord пересчитывает такие правила при каждом изменении в чате", true),
 
     /* ---------- text ---------- */
     { id: "msgFontScale", cat: "messages", group: "Текст", kind: "slider", label: "Размер текста сообщений", default: 100, min: 70, max: 150, unit: "%", css: val => val !== 100 && `${S.messageContent} { font-size: calc(1rem * ${val / 100}) !important; }` },
     { id: "msgLineHeight", cat: "messages", group: "Текст", kind: "slider", label: "Межстрочный интервал", default: 138, min: 100, max: 200, unit: "%", css: val => val !== 138 && `${S.messageContent} { line-height: ${val / 100} !important; }` },
     { id: "msgLetterSpacing", cat: "messages", group: "Текст", kind: "slider", label: "Расстояние между буквами", default: 0, min: -1, max: 3, step: 0.1, unit: " px", css: val => val !== 0 && `${S.messageContent} { letter-spacing: ${val}px; }` },
     { id: "msgSpacing", cat: "messages", group: "Текст", kind: "slider", label: "Отступ между группами сообщений", default: 16, min: 0, max: 40, unit: " px", css: val => val !== 16 && `${S.messageGroupStart} { margin-top: ${val}px !important; }` },
-    toggle("msgTextGlow", "Текст", "Лёгкое свечение текста", false, `${S.messageContent} { text-shadow: 0 0 6px ${mixAccent(35)}; }`),
+    toggle("msgTextGlow", "Текст", "Лёгкое свечение текста", false, `${S.messageContent} { text-shadow: 0 0 6px ${mixAccent(35)}; }`, "Тень у всего текста чата: заметно дороже при прокрутке", true),
     toggle("timestampsAlways", "Текст", "Время у каждого сообщения всегда видно", false, `${S.timestampHover} { opacity: 1 !important; }`),
     toggle("timestampAccent", "Текст", "Время цветом акцента", false, `${S.timestamp}, ${S.timestamp} time { color: ${mixAccent(80)} !important; }`),
     toggle("editedAccent", "Текст", "Метка «изменено» цветом акцента", false, `${S.edited} { color: ${ACCENT2} !important; font-style: italic; }`),
@@ -114,7 +127,7 @@ ${S.reaction}:hover { transform: translateY(-2px) scale(1.08); box-shadow: 0 4px
 
     /* ---------- chat chrome ---------- */
     toggle("systemMsgDim", "Служебное", "Приглушить системные сообщения", false,
-        `${S.messageLi}:has(${S.systemMessage}) { opacity: .55; transition: opacity var(--vv-speed) ease; } ${S.messageLi}:has(${S.systemMessage}):hover { opacity: 1; }`),
+        `${S.messageLi}:has(${S.systemMessage}) { opacity: .55; transition: opacity var(--vv-speed) ease; } ${S.messageLi}:has(${S.systemMessage}):hover { opacity: 1; }`, "Discord пересчитывает такие правила при каждом изменении в чате", true),
     toggle("newMessagesBarGradient", "Служебное", "Плашка «новые сообщения» градиентом", true,
         `${S.newMessagesBar} { background: linear-gradient(90deg, ${ACCENT}, ${ACCENT2}) !important; box-shadow: 0 4px 16px ${mixAccent(40)} !important; }`),
     toggle("unreadDividerAccent", "Служебное", "Линия непрочитанного цветом акцента", true,
@@ -130,7 +143,8 @@ ${S.reaction}:hover { transform: translateY(-2px) scale(1.08); box-shadow: 0 4px
         css: (color, v) => {
             if (!v.kwEnabled) return "";
             const c = normalizeHex(color) ?? "#ffd166";
-            return `${S.messageLi}[data-vv-kw] > [class*="message_"] { background: linear-gradient(90deg, color-mix(in srgb, ${c} 22%, transparent), transparent 70%) !important; box-shadow: inset 3px 0 0 ${c} !important; }`;
+            // background-image only, so the hover background-color still shows through
+            return `${S.messageLi}[data-vv-kw] > [class*="message_"] { background-image: linear-gradient(90deg, color-mix(in srgb, ${c} 22%, transparent), transparent 70%) !important; --vv-ms-kw: inset 3px 0 0 ${c}; }`;
         }
     }
 ];

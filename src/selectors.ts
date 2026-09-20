@@ -16,7 +16,9 @@ export const S = {
 
     guilds: c("guilds"),
     guildItem: `${c("guilds")} ${c("listItem")}`,
-    guildIcon: `${c("guilds")} ${c("listItemWrapper")}`,
+    /** icon container of a guild list item, relative to the item: listItemWrapper_ (home, discover), blobContainer_ or wrapper_ (servers) */
+    guildIconTail: `> span:not(${c("hiddenVisually")}) > div`,
+    guildIcon: `${c("guilds")} ${c("listItem")} > span:not(${c("hiddenVisually")}) > div`,
     guildPill: `${c("guilds")} ${c("listItem")} > ${c("wrapper")} > ${c("item")}`,
     guildSeparator: c("guildSeparator"),
     guildFolder: c("folderGroupBackground"),

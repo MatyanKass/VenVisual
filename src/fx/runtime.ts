@@ -4,8 +4,6 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { managedStyleRootNode } from "@api/Styles";
-import { createAndAppendStyle } from "@utils/css";
 import { SelectedChannelStore, showToast, UserStore } from "@webpack/common";
 
 import { FALLBACK_ACCENT, FALLBACK_ACCENT2 } from "../build";
@@ -24,7 +22,14 @@ interface RuntimeOpts {
 type Timer = ReturnType<typeof setTimeout>;
 type Interval = ReturnType<typeof setInterval>;
 
-const DYN_STYLE_ID = "vc-venvisual-dyn";
+const LIVE_ACCENT = "--vv-live-accent";
+const LIVE_ACCENT2 = "--vv-live-accent2";
+/** hue step of the rainbow accent per update, and the update interval bounds (each update restyles the whole page) */
+const RAINBOW_STEP_DEG = 3;
+const RAINBOW_MIN_MS = 250;
+const RAINBOW_MAX_MS = 1000;
+/** the canvas engine gets the hue in coarse buckets so its sprite cache is reused instead of re-rendered */
+const ENGINE_HUE_BUCKET = 15;
 const TEXTBOX = '[class*="slateTextArea_"], [role="textbox"]';
 const CHAT_INPUT = '[class*="channelTextArea_"]';
 const CHAT_CONTENT = '[class*="chatContent_"]';
@@ -42,11 +47,15 @@ let widgetsKey: string | null = null;
 let keywordsKey: string | null = null;
 
 /* rainbow accent */
-let dynStyle: HTMLStyleElement | null = null;
+let rainbowOn = false;
 let rainbowTimer: Interval | null = null;
+let rainbowVisBound = false;
+let rainbowMs = 0;
 let rainbowHue = 0;
+let rainbowLast = 0;
 let rainbowSpeed = 20;
 let rainbowSat = 85;
+let rainbowPauseUnfocused = true;
 
 /* auto theme */
 let autoThemeTimer: Interval | null = null;
@@ -63,8 +72,10 @@ let hotkeyOn = false;
 let sparksOn = false;
 
 /* one-shot effects */
+let shakeTimer: Timer | null = null;
+let flashEl: HTMLElement | null = null;
+let flashTimer: Timer | null = null;
 const oneShotTimers = new Set<Timer>();
-const flashEls = new Set<HTMLElement>();
 const seenSends = new Set<string>();
 
 function safe(what: string, fn: () => void) {
@@ -75,12 +86,13 @@ function safe(what: string, fn: () => void) {
     }
 }
 
-function later(fn: () => void, ms: number) {
+function later(fn: () => void, ms: number): Timer {
     const id = setTimeout(() => {
         oneShotTimers.delete(id);
         fn();
     }, ms);
     oneShotTimers.add(id);
+    return id;
 }
 
 /* ---------- engine ---------- */
@@ -118,7 +130,7 @@ function engineConfig(v: Values): FxConfig | null {
 
     let accent: string, accent2: string;
     if (rainbowTimer) {
-        [accent, accent2] = rainbowColors();
+        [accent, accent2] = rainbowColors(ENGINE_HUE_BUCKET);
     } else {
         const palette = resolvePalette(v);
         accent = palette?.accent ?? FALLBACK_ACCENT;
@@ -141,7 +153,8 @@ function engineConfig(v: Values): FxConfig | null {
         clickIntensity: Number(v.clickIntensity),
         colors: String(v.fxColors),
         pauseUnfocused: !!v.fxPauseUnfocused,
-        fps: Number(v.fxFps) || 0,
+        fps: v.fxFps === "auto" ? -1 : Number(v.fxFps) || 0,
+        quality: v.fxQuality,
         accent,
         accent2
     };
@@ -183,46 +196,87 @@ function setKeywords(words: string[] | null) {
 
 /* ---------- rainbow accent ---------- */
 
-function rainbowColors(): [string, string] {
-    const h1 = rainbowHue.toFixed(1);
-    const h2 = ((rainbowHue + 60) % 360).toFixed(1);
+/** bucket > 0 snaps the hue to multiples of bucket degrees */
+function rainbowColors(bucket = 0): [string, string] {
+    const hue = bucket > 0 ? (Math.round(rainbowHue / bucket) * bucket) % 360 : rainbowHue;
+    const h1 = hue.toFixed(1);
+    const h2 = ((hue + 60) % 360).toFixed(1);
     return [`hsl(${h1}, ${rainbowSat}%, 64%)`, `hsl(${h2}, ${rainbowSat}%, 64%)`];
 }
 
 function writeRainbow() {
     const [a, b] = rainbowColors();
-    if (dynStyle) {
-        dynStyle.textContent = `:root, .theme-dark, .theme-light { --vv-accent: ${a} !important; --vv-accent2: ${b} !important; }`;
-    }
+    // an inline custom property on <html>: cheaper than rewriting a stylesheet
+    const { style } = document.documentElement;
+    style.setProperty(LIVE_ACCENT, a);
+    style.setProperty(LIVE_ACCENT2, b);
+
     const eng = engine;
     if (eng && engineKey !== null) {
-        engineAccent = `${a}|${b}`;
-        safe("fx engine accent", () => eng.setAccent(a, b));
+        const [ea, eb] = rainbowColors(ENGINE_HUE_BUCKET);
+        const pair = `${ea}|${eb}`;
+        if (pair !== engineAccent) {
+            engineAccent = pair;
+            safe("fx engine accent", () => eng.setAccent(ea, eb));
+        }
     }
 }
 
 function rainbowTick() {
-    rainbowHue = (rainbowHue + 360 * 0.1 / rainbowSpeed) % 360;
-    if (document.hidden) return;
+    const now = Date.now();
+    const elapsed = rainbowLast ? now - rainbowLast : rainbowMs;
+    rainbowLast = now;
+    rainbowHue = (rainbowHue + 360 * Math.min(elapsed, 5000) / 1000 / rainbowSpeed) % 360;
+    if (document.hidden || (rainbowPauseUnfocused && !document.hasFocus())) return;
     writeRainbow();
+}
+
+function startRainbowTimer() {
+    if (rainbowTimer || document.hidden) return;
+    rainbowLast = Date.now();
+    rainbowTimer = setInterval(rainbowTick, rainbowMs);
+}
+
+function stopRainbowTimer() {
+    if (!rainbowTimer) return;
+    clearInterval(rainbowTimer);
+    rainbowTimer = null;
+}
+
+/** a hidden window gets no ticks at all, the accent simply resumes where it stopped */
+function onRainbowVisibility() {
+    if (document.hidden) stopRainbowTimer();
+    else if (rainbowOn) startRainbowTimer();
+}
+
+function bindRainbowVisibility(on: boolean) {
+    if (on === rainbowVisBound) return;
+    rainbowVisBound = on;
+    if (on) document.addEventListener("visibilitychange", onRainbowVisibility);
+    else document.removeEventListener("visibilitychange", onRainbowVisibility);
 }
 
 function enableRainbow(v: Values) {
     rainbowSpeed = Math.max(1, Number(v.rainbowSpeed) || 20);
     rainbowSat = Math.min(100, Math.max(0, Number(v.rainbowSat) || 0));
-    // created lazily after the main style element so its !important vars win
-    dynStyle ??= createAndAppendStyle(DYN_STYLE_ID, managedStyleRootNode);
-    rainbowTimer ??= setInterval(rainbowTick, 100);
+    rainbowPauseUnfocused = !!v.fxPauseUnfocused;
+    const ms = Math.round(Math.min(RAINBOW_MAX_MS, Math.max(RAINBOW_MIN_MS, rainbowSpeed * 1000 * RAINBOW_STEP_DEG / 360)));
+    if (rainbowTimer && ms !== rainbowMs) stopRainbowTimer();
+    rainbowMs = ms;
+    rainbowOn = true;
+    bindRainbowVisibility(true);
+    startRainbowTimer();
     writeRainbow();
 }
 
 function disableRainbow() {
-    if (rainbowTimer) {
-        clearInterval(rainbowTimer);
-        rainbowTimer = null;
-    }
-    dynStyle?.remove();
-    dynStyle = null;
+    rainbowOn = false;
+    bindRainbowVisibility(false);
+    stopRainbowTimer();
+    rainbowLast = 0;
+    const { style } = document.documentElement;
+    style.removeProperty(LIVE_ACCENT);
+    style.removeProperty(LIVE_ACCENT2);
 }
 
 /* ---------- auto theme ---------- */
@@ -290,6 +344,9 @@ function setParallax(on: boolean) {
 
 function onHotkey(e: KeyboardEvent) {
     if (!e.ctrlKey || !e.altKey || e.shiftKey || e.metaKey || e.code !== "KeyV") return;
+    // on Windows AltGr is reported as Ctrl+Alt: AltGr+V types "@" on Hungarian / Croatian / Slovenian layouts, leave that alone
+    const key = e.key.toLowerCase();
+    if (e.getModifierState?.("AltGraph") && key.length === 1 && key !== "v" && key !== "м") return;
     e.preventDefault();
     if (e.repeat) return;
     paused = !paused;
@@ -344,6 +401,33 @@ function setTypingSparks(on: boolean) {
     else document.removeEventListener("keydown", onTypingKey, true);
 }
 
+/* ---------- mention flash ---------- */
+
+function showFlash() {
+    if (flashEl?.isConnected) {
+        // a second mention restarts the same overlay instead of stacking another one on top
+        flashEl.style.animation = "none";
+        void flashEl.offsetWidth;
+        flashEl.style.animation = "";
+    } else {
+        flashEl?.remove();
+        flashEl = document.createElement("div");
+        flashEl.className = "vv-flash";
+        document.body.appendChild(flashEl);
+    }
+
+    // one removal timer at a time, otherwise the first mention cuts the restarted flash short
+    if (flashTimer) {
+        clearTimeout(flashTimer);
+        oneShotTimers.delete(flashTimer);
+    }
+    flashTimer = later(() => {
+        flashTimer = null;
+        flashEl?.remove();
+        flashEl = null;
+    }, 1200);
+}
+
 /* ---------- public api ---------- */
 
 export function isPaused() {
@@ -375,7 +459,8 @@ export function updateRuntime(v: Values, pausedNow: boolean) {
 
     setParallax(!off && isSeeThrough(v) && !!v.parallax);
     setKeywords(!pausedNow && v.kwEnabled ? parseKeywords(v.kwList) : null);
-    setWidgets(off ? null : widgetConfig(v));
+    // economy mode keeps the cheap clock / timer, only the FPS counter (its own animation frame loop) goes away
+    setWidgets(pausedNow ? null : widgetConfig(v.perfMode ? { ...v, fpsCounter: false } : v));
     setEngine(off ? null : engineConfig(v));
     setTypingSparks(!off && !!v.typingSparks);
 }
@@ -400,8 +485,11 @@ export function stopRuntime() {
 
     for (const id of oneShotTimers) clearTimeout(id);
     oneShotTimers.clear();
-    for (const el of flashEls) el.remove();
-    flashEls.clear();
+    shakeTimer = null;
+    flashTimer = null;
+    flashEl?.remove();
+    flashEl = null;
+    document.querySelectorAll(".vv-flash").forEach(el => el.remove());
     document.querySelectorAll(".vv-shake").forEach(el => el.classList.remove("vv-shake"));
 
     seenSends.clear();
@@ -457,16 +545,7 @@ export function onMessageCreate(e: { channelId: string; message: any; optimistic
 
     const v = opts.getValues();
 
-    if (v.mentionFlash) {
-        const flash = document.createElement("div");
-        flash.className = "vv-flash";
-        document.body.appendChild(flash);
-        flashEls.add(flash);
-        later(() => {
-            flash.remove();
-            flashEls.delete(flash);
-        }, 1200);
-    }
+    if (v.mentionFlash) showFlash();
 
     if (v.mentionShake) {
         const chat = document.querySelector<HTMLElement>(CHAT_CONTENT);
@@ -475,7 +554,15 @@ export function onMessageCreate(e: { channelId: string; message: any; optimistic
             chat.classList.remove("vv-shake");
             void chat.offsetWidth;
             chat.classList.add("vv-shake");
-            later(() => chat.classList.remove("vv-shake"), 500);
+            // one removal timer at a time, otherwise an earlier mention cuts the restarted shake short
+            if (shakeTimer) {
+                clearTimeout(shakeTimer);
+                oneShotTimers.delete(shakeTimer);
+            }
+            shakeTimer = later(() => {
+                shakeTimer = null;
+                chat.classList.remove("vv-shake");
+            }, 500);
         }
     }
 }

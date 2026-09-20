@@ -4,7 +4,14 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { ACCENT, ACCENT2, cssSafe, Feature, Values } from "../registry";
+import { ACCENT, ACCENT2, Feature, Values } from "../registry";
+
+const BG_MODES = ["none", "image", "gradient", "aurora", "mesh", "stars", "grid"];
+const BG_POSITIONS = ["center", "top", "bottom", "left", "right"];
+const ANIMATED_MODES = new Set(["gradient", "aurora", "stars", "grid"]);
+
+const IMAGE_ONLY = { activeWhen: (v: Values) => v.bgMode === "image", activeHint: "Работает с фоном «Картинка по ссылке»" };
+const SEE_THROUGH_ONLY = { activeWhen: (v: Values) => isSeeThrough(v), activeHint: "Работает, когда выбран фон (для картинки нужна ссылка)" };
 
 export const backgroundFeatures: Feature[] = [
     {
@@ -19,21 +26,21 @@ export const backgroundFeatures: Feature[] = [
             { value: "grid", label: "Неоновая сетка (ретро)" }
         ]
     },
-    { id: "bgImage", cat: "background", group: "Фон", kind: "text", label: "Ссылка на картинку", desc: "Прямая ссылка на jpg/png/gif/webp", placeholder: "https://i.imgur.com/....jpg", default: "", dependsOn: "bgMode" },
+    { id: "bgImage", cat: "background", group: "Фон", kind: "text", label: "Ссылка на картинку", desc: "Прямая ссылка на jpg/png/gif/webp или data:-ссылка", placeholder: "https://i.imgur.com/....jpg", default: "", dependsOn: "bgMode", ...IMAGE_ONLY },
     {
-        id: "bgPosition", cat: "background", group: "Фон", kind: "select", label: "Положение картинки", default: "center", dependsOn: "bgMode",
+        id: "bgPosition", cat: "background", group: "Фон", kind: "select", label: "Положение картинки", default: "center", dependsOn: "bgMode", ...IMAGE_ONLY,
         options: [{ value: "center", label: "По центру" }, { value: "top", label: "Сверху" }, { value: "bottom", label: "Снизу" }, { value: "left", label: "Слева" }, { value: "right", label: "Справа" }]
     },
     { id: "bgBlur", cat: "background", group: "Фон", kind: "slider", label: "Размытие фона", default: 4, min: 0, max: 40, unit: " px", dependsOn: "bgMode" },
     { id: "bgDim", cat: "background", group: "Фон", kind: "slider", label: "Затемнение фона", default: 40, min: 0, max: 95, unit: "%", dependsOn: "bgMode" },
     { id: "bgSaturation", cat: "background", group: "Фон", kind: "slider", label: "Насыщенность фона", default: 100, min: 0, max: 250, unit: "%", dependsOn: "bgMode" },
-    { id: "gradientSpeed", cat: "background", group: "Фон", kind: "slider", label: "Скорость анимированного фона", default: 20, min: 4, max: 120, unit: " с", dependsOn: "bgMode" },
-    { id: "kenBurns", cat: "background", group: "Фон", kind: "toggle", label: "Медленный наезд камеры", desc: "Картинка плавно приближается и отдаляется", default: false, dependsOn: "bgMode" },
-    { id: "parallax", cat: "background", group: "Фон", kind: "toggle", label: "Параллакс за мышкой", desc: "Фон немного смещается вслед за курсором", default: false, dependsOn: "bgMode" },
+    { id: "gradientSpeed", cat: "background", group: "Фон", kind: "slider", label: "Скорость анимированного фона", default: 20, min: 4, max: 120, unit: " с", dependsOn: "bgMode", activeWhen: v => ANIMATED_MODES.has(v.bgMode), activeHint: "Работает с анимированными фонами" },
+    { id: "kenBurns", cat: "background", group: "Фон", kind: "toggle", label: "Медленный наезд камеры", desc: "Фон плавно приближается и отдаляется", default: false, dependsOn: "bgMode" },
+    { id: "parallax", cat: "background", group: "Фон", kind: "toggle", label: "Параллакс за мышкой", desc: "Фон немного смещается вслед за курсором", default: false, dependsOn: "bgMode", ...SEE_THROUGH_ONLY },
     { id: "parallaxStrength", cat: "background", group: "Фон", kind: "slider", label: "Сила параллакса", default: 18, min: 4, max: 60, unit: " px", dependsOn: "parallax" },
 
-    { id: "panelOpacity", cat: "background", group: "Панели поверх фона", kind: "slider", label: "Непрозрачность панелей", default: 70, min: 0, max: 100, unit: "%", dependsOn: "bgMode" },
-    { id: "glassPanels", cat: "background", group: "Панели поверх фона", kind: "toggle", label: "Эффект стекла", desc: "Размытие под панелями", default: false, heavy: true, dependsOn: "bgMode" },
+    { id: "panelOpacity", cat: "background", group: "Панели поверх фона", kind: "slider", label: "Непрозрачность панелей", default: 70, min: 0, max: 100, unit: "%", dependsOn: "bgMode", ...SEE_THROUGH_ONLY },
+    { id: "glassPanels", cat: "background", group: "Панели поверх фона", kind: "toggle", label: "Эффект стекла", desc: "Размытие под панелями", default: false, heavy: true, dependsOn: "bgMode", ...SEE_THROUGH_ONLY },
     { id: "glassStrength", cat: "background", group: "Панели поверх фона", kind: "slider", label: "Сила стекла", default: 14, min: 2, max: 40, unit: " px", dependsOn: "glassPanels" },
 
     { id: "vignette", cat: "background", group: "Наложения на всё окно", kind: "slider", label: "Виньетка по краям", default: 0, min: 0, max: 90, unit: "%" },
@@ -41,33 +48,48 @@ export const backgroundFeatures: Feature[] = [
     { id: "scanlines", cat: "background", group: "Наложения на всё окно", kind: "slider", label: "Полосы как на ЭЛТ-мониторе", default: 0, min: 0, max: 40, unit: "%" }
 ];
 
-export const isSeeThrough = (v: Values) => v.bgMode !== "none" && !(v.bgMode === "image" && !v.bgImage?.trim());
+export const isSeeThrough = (v: Values) => BG_MODES.includes(v.bgMode) && v.bgMode !== "none" && !(v.bgMode === "image" && !v.bgImage?.trim());
 
 const dark = (color: string, pct: number) => `color-mix(in srgb, ${color} ${pct}%, #05050a)`;
 
-function layerBackground(v: Values): string {
+/* stars: every star layer tiles at 400px and drifts, the last layer is the sky (explicit lists, css would otherwise repeat short ones) */
+const STAR_COUNT = 40;
+const STAR_LAYERS = Array.from({ length: STAR_COUNT }, (_, i) => {
+    const x = (i * 37 + 11) % 100, y = (i * 61 + 7) % 100, s = i % 5 === 0 ? 2 : 1;
+    return `radial-gradient(${s}px ${s}px at ${x}% ${y}%, rgba(255,255,255,${0.5 + (i % 5) / 10}), transparent)`;
+}).join(", ");
+const STAR_SIZES = [...Array(STAR_COUNT).fill("400px 400px"), "100% 100%"].join(", ");
+
+/** percent-encode only what could end the quoted url("") string; everything else (e.g. ";" of data: urls) is kept */
+const cssUrl = (s: string) => s.replace(/["\\\n\r\f]/g, m => encodeURIComponent(m));
+
+/**
+ * Every animated mode moves the whole layer with `transform`, never `background-position`:
+ * a transform is handed to the compositor, so the blurred layer is rasterized once instead of
+ * being repainted and re-blurred every frame. `padPx` / `padPct` say how far the layer drifts,
+ * so it can be grown by that much and never show an edge. The tiled modes (stars, grid) drift
+ * by exactly one tile, which loops seamlessly.
+ */
+interface BgLayer { css: string; anim: string; padPx: number; padPct: number; }
+
+function layerBackground(v: Values): BgLayer {
     switch (v.bgMode) {
         case "image": {
-            const url = cssSafe(v.bgImage.trim()).replace(/[()'\s]/g, m => encodeURIComponent(m));
-            return `background: url("${url}") ${v.bgPosition} / cover no-repeat;`;
+            const pos = BG_POSITIONS.includes(v.bgPosition) ? v.bgPosition : "center";
+            return { css: `background: url("${cssUrl(String(v.bgImage ?? "").trim())}") ${pos} / cover no-repeat;`, anim: "", padPx: 0, padPct: 0 };
         }
         case "gradient":
-            return `background: linear-gradient(125deg, #05050a, ${dark(ACCENT, 55)}, ${dark(ACCENT2, 45)}, #05050a, ${dark(ACCENT, 40)}); background-size: 400% 400%; animation: vv-bg-pan var(--vv-bg-speed) ease-in-out infinite alternate;`;
+            return { css: `background: linear-gradient(125deg, #05050a, ${dark(ACCENT, 55)}, ${dark(ACCENT2, 45)}, #05050a, ${dark(ACCENT, 40)}); background-size: 200% 200%;`, anim: "vv-bg-pan var(--vv-bg-speed) ease-in-out infinite alternate", padPx: 0, padPct: 18 };
         case "aurora":
-            return `background: radial-gradient(40% 55% at 20% 30%, ${dark(ACCENT, 70)}, transparent 70%), radial-gradient(45% 50% at 80% 20%, ${dark(ACCENT2, 65)}, transparent 70%), radial-gradient(60% 50% at 50% 90%, ${dark(ACCENT, 45)}, transparent 70%), #04040a; background-size: 160% 160%; animation: vv-bg-aurora var(--vv-bg-speed) ease-in-out infinite alternate;`;
+            return { css: `background: radial-gradient(40% 55% at 20% 30%, ${dark(ACCENT, 70)}, transparent 70%), radial-gradient(45% 50% at 80% 20%, ${dark(ACCENT2, 65)}, transparent 70%), radial-gradient(60% 50% at 50% 90%, ${dark(ACCENT, 45)}, transparent 70%), #04040a; background-size: 140% 140%;`, anim: "vv-bg-aurora var(--vv-bg-speed) ease-in-out infinite alternate", padPx: 0, padPct: 22 };
         case "mesh":
-            return `background: radial-gradient(at 10% 10%, ${dark(ACCENT, 60)} 0, transparent 50%), radial-gradient(at 90% 15%, ${dark(ACCENT2, 55)} 0, transparent 50%), radial-gradient(at 85% 90%, ${dark(ACCENT, 45)} 0, transparent 50%), radial-gradient(at 15% 85%, ${dark(ACCENT2, 40)} 0, transparent 50%), #07070d;`;
-        case "stars": {
-            const stars = Array.from({ length: 40 }, (_, i) => {
-                const x = (i * 37 + 11) % 100, y = (i * 61 + 7) % 100, s = i % 5 === 0 ? 2 : 1;
-                return `radial-gradient(${s}px ${s}px at ${x}% ${y}%, rgba(255,255,255,${0.5 + (i % 5) / 10}), transparent)`;
-            }).join(", ");
-            return `background: ${stars}, radial-gradient(ellipse at bottom, ${dark(ACCENT, 25)}, #020208 70%); background-size: 400px 400px, 400px 400px, 100% 100%; animation: vv-bg-stars calc(var(--vv-bg-speed) * 6) linear infinite;`;
-        }
+            return { css: `background: radial-gradient(at 10% 10%, ${dark(ACCENT, 60)} 0, transparent 50%), radial-gradient(at 90% 15%, ${dark(ACCENT2, 55)} 0, transparent 50%), radial-gradient(at 85% 90%, ${dark(ACCENT, 45)} 0, transparent 50%), radial-gradient(at 15% 85%, ${dark(ACCENT2, 40)} 0, transparent 50%), #07070d;`, anim: "", padPx: 0, padPct: 0 };
+        case "stars":
+            return { css: `background: ${STAR_LAYERS}, radial-gradient(ellipse at bottom, ${dark(ACCENT, 25)}, #020208 70%); background-size: ${STAR_SIZES};`, anim: "vv-bg-stars calc(var(--vv-bg-speed) * 6) linear infinite", padPx: 400, padPct: 0 };
         case "grid":
-            return `background: linear-gradient(transparent 0 calc(100% - 1px), ${dark(ACCENT, 80)} calc(100% - 1px)) 0 0 / 100% 44px, linear-gradient(90deg, transparent 0 calc(100% - 1px), ${dark(ACCENT2, 70)} calc(100% - 1px)) 0 0 / 44px 100%, linear-gradient(180deg, #06020f, ${dark(ACCENT, 30)}); animation: vv-bg-grid calc(var(--vv-bg-speed) / 4) linear infinite;`;
+            return { css: `background: linear-gradient(transparent 0 calc(100% - 1px), ${dark(ACCENT, 80)} calc(100% - 1px)) 0 0 / 100% 44px, linear-gradient(90deg, transparent 0 calc(100% - 1px), ${dark(ACCENT2, 70)} calc(100% - 1px)) 0 0 / 44px 100%, linear-gradient(180deg, #06020f, ${dark(ACCENT, 30)});`, anim: "vv-bg-grid calc(var(--vv-bg-speed) / 4) linear infinite", padPx: 44, padPct: 0 };
     }
-    return "";
+    return { css: "", anim: "", padPx: 0, padPct: 0 };
 }
 
 export function backgroundCss(v: Values): string {
@@ -75,10 +97,15 @@ export function backgroundCss(v: Values): string {
 
     if (isSeeThrough(v)) {
         const blur = v.bgBlur;
-        out.push(`@keyframes vv-bg-pan { from { background-position: 0% 50%; } to { background-position: 100% 50%; } }
-@keyframes vv-bg-aurora { 0% { background-position: 0% 0%; } 50% { background-position: 100% 40%; } 100% { background-position: 30% 100%; } }
-@keyframes vv-bg-stars { to { background-position: 400px 800px, -400px 400px, 0 0; } }
-@keyframes vv-bg-grid { to { background-position: 0 44px, 0 0, 0 0; } }
+        const layer = layerBackground(v);
+        // three separate properties so they compose instead of overwriting each other:
+        // drift uses `transform`, ken burns uses `scale`, the parallax uses `translate`
+        const anims = [layer.anim, v.kenBurns ? "vv-kenburns 40s ease-in-out infinite alternate" : ""].filter(Boolean);
+        const pad = `calc(-${blur * 2 + (v.parallax ? v.parallaxStrength : 0) + layer.padPx}px${layer.padPct ? ` - ${layer.padPct}%` : ""})`;
+        out.push(`@keyframes vv-bg-pan { to { transform: translate3d(-14%, -7%, 0); } }
+@keyframes vv-bg-aurora { 0% { transform: translate3d(-7%, -4%, 0) scale(1.04); } 50% { transform: translate3d(7%, 5%, 0) scale(1.12); } 100% { transform: translate3d(-3%, 7%, 0) scale(1.06); } }
+@keyframes vv-bg-stars { to { transform: translate3d(-400px, 400px, 0); } }
+@keyframes vv-bg-grid { to { transform: translate3d(0, 44px, 0); } }
 @keyframes vv-kenburns { from { scale: 1.04; } to { scale: 1.16; } }
 :root { --vv-bg-speed: ${v.gradientSpeed}s; }
 html { background: #000 !important; }
@@ -86,14 +113,14 @@ body, #app-mount { background: transparent !important; }
 #app-mount::before {
     content: "";
     position: fixed;
-    inset: ${blur > 0 || v.parallax ? `-${blur * 2 + (v.parallax ? v.parallaxStrength : 0)}px` : "0"};
+    inset: ${blur > 0 || v.parallax || layer.padPx || layer.padPct ? pad : "0"};
     z-index: -1;
     pointer-events: none;
-    ${layerBackground(v)}
+    ${layer.css}
     filter: blur(${blur}px) brightness(${(100 - v.bgDim) / 100}) saturate(${v.bgSaturation / 100});
     translate: calc(var(--vv-px, 0) * ${v.parallaxStrength}px) calc(var(--vv-py, 0) * ${v.parallaxStrength}px);
     transition: translate .25s ease-out;
-    ${v.kenBurns ? "animation: vv-kenburns 40s ease-in-out infinite alternate;" : ""}
+    ${anims.length ? `animation: ${anims.join(", ")};\n    will-change: transform;\n    backface-visibility: hidden;` : ""}
 }
 [class*="appMount_"], [class*="app_"], [class*="bg_"], [class*="layers_"], [class*="layer_"], [class*="baseLayer_"] > [class*="container_"], [class*="baseLayer_"] > [class*="container_"] > [class*="base_"], [class*="page_"], [class*="chat_"], [class*="chatContent_"] {
     background: transparent !important;

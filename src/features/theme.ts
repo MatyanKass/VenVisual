@@ -96,8 +96,9 @@ export function themeVarsCss(p: ThemePalette, panelOpacity: number): string {
     const lowest = alpha(p.bgLowest, o);
     const low = alpha(p.bgLow, o);
     const base = alpha(p.bgBase, o);
-    const high = alpha(p.bgHigh, Math.min(100, o + 15));
-    const higher = alpha(shade(p.bgHigh, 6), Math.min(100, o + 20));
+    // floating surfaces (menus, popouts, tooltips) stay readable even with very transparent panels
+    const high = alpha(p.bgHigh, Math.max(85, Math.min(100, o + 15)));
+    const higher = alpha(shade(p.bgHigh, 6), Math.max(90, Math.min(100, o + 20)));
     const input = alpha(p.bgHigh, Math.min(100, o + 20));
     const a = ACCENT;
 
