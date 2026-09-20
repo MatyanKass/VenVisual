@@ -347,6 +347,86 @@ export const PRESETS: Preset[] = [
             widgetPosition: "top-left",
             widgetStyle: "glass"
         }
+    },
+    {
+        id: "crimsonSakura",
+        label: "🌸 Кровавая сакура",
+        desc: "Малиново-розовая тема с мягким переходом в ночную, лепестки сакуры, звёздный след за курсором и красное свечение по краям",
+        values: {
+            autoTheme: true,
+            dayTheme: "crimson",
+            nightTheme: "sakuraNight",
+            nightStart: 20,
+
+            hoverStyle: "soft",
+            hoverShift: 4,
+            hoverTint: 120,
+            hoverServers: "wiggle",
+            hoverBold: true,
+            selectedPulse: true,
+            unreadGlow: true,
+
+            msgAppear: "fade",
+            mentionStyle: "pulse",
+            mentionGlow: 18,
+            linkMsgHighlight: true,
+            msgSpacing: 24,
+            msgTextGlow: true,
+            msgGlowStrength: 25,
+            timestampAccent: true,
+            editedAccent: true,
+            spoilerGlass: true,
+
+            nameStyle: "accent",
+            avatarShape: "squircle",
+            avatarHover: "tilt",
+
+            bgMode: "mesh",
+            bgDarkness: 45,
+            bgBlur: 0,
+            panelOpacity: 92,
+            vignette: 12,
+            vignetteColor: "#4a0714",
+            vignetteSoftness: 60,
+
+            particles: "sakura",
+            particleCount: 33,
+            particleOpacity: 50,
+            particleWind: 8,
+            particleDepth: 100,
+            particleSpin: 160,
+            cursorTrail: "stars",
+            trailLength: 8,
+            trailFade: 50,
+            cursorRing: true,
+            clickEffect: "burst",
+            clickCount: 24,
+            sendEffect: "fireworks",
+            typingSparks: true,
+            mentionFlash: true,
+            fxColors: "custom",
+            fxColor1: "#e04363",
+            fxColor2: "#ff9ec4",
+
+            radius: 12,
+            inputGradientBorder: true,
+            popupAnim: "blur",
+            popoutGlowStrength: 120,
+            backdropBlur: 5,
+            focusMode: true,
+            focusOpacity: 65,
+            focusFade: 4,
+            macButtons: true,
+
+            windowFrame: "accent",
+            frameGlow: 140,
+            chatWatermark: "♥",
+            watermarkOpacity: 5,
+            clock: true,
+            clockDate: true,
+            sessionTimer: true,
+            widgetStyle: "minimal"
+        }
     }
 ];
 

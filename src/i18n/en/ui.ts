@@ -69,6 +69,10 @@ export const EN_CATEGORIES: Record<CategoryId, string> = {
 
 /** English names and descriptions for the presets in src/presets.ts, keyed by preset id. */
 export const EN_PRESETS: Record<string, PresetText> = {
+    crimsonSakura: {
+        label: "🌸 Crimson sakura",
+        desc: "Crimson and blossom pink, fading into a softer night theme, with falling petals, a starry cursor trail and a red glow around the edges"
+    },
     cyberpunk: {
         label: "⚡ Neon cyberpunk",
         desc: "Neon theme, rainbow names, neon highlight, a retro grid in the background, floating dust and a glowing window frame"

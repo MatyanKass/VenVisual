@@ -41,7 +41,10 @@ const THEMES: Record<string, string> = {
     coffee: "Coffee",
     sunset: "Sunset",
     blood: "Blood Moon",
-    gold: "Royal Gold"
+    gold: "Royal Gold",
+    crimson: "Crimson Sakura",
+    sakuraNight: "Sakura Night",
+    wine: "Wine"
 };
 
 export const EN_THEME: Record<string, FeatureText> = {

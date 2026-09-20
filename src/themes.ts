@@ -48,7 +48,11 @@ export const THEMES: Record<string, ThemePalette> = {
     coffee: t("Coffee", "#15100c", "#1c1510", "#241b15", "#33271e", "#f3e6d8", "#b09880", "#d4a373", "#e9c46a"),
     sunset: t("Sunset", "#170d0f", "#1f1215", "#27171a", "#352024", "#fff0e6", "#b8938a", "#ff7a45", "#ffcf4a"),
     blood: t("Blood Moon", "#0f0506", "#170809", "#1f0b0d", "#2e1215", "#ffe9ea", "#b48a8d", "#ff3b4e", "#ff8a3b"),
-    gold: t("Royal Gold", "#0e0c08", "#15120b", "#1c180f", "#2a2416", "#fff6de", "#b8a57a", "#ffd166", "#f4a261")
+    gold: t("Royal Gold", "#0e0c08", "#15120b", "#1c180f", "#2a2416", "#fff6de", "#b8a57a", "#ffd166", "#f4a261"),
+    /* crimson sakura family: warm near-black backgrounds, blossom pink over deep wine red */
+    crimson: t("Crimson Sakura", "#120a0d", "#180d11", "#1f1116", "#2c1720", "#ffe9ef", "#bb8b99", "#e04363", "#ff9ec4"),
+    sakuraNight: t("Sakura Night", "#0b0710", "#100a16", "#150e1c", "#201529", "#f6eaf3", "#a08fae", "#c3608b", "#e8a0c0"),
+    wine: t("Wine", "#140a0c", "#1b0e11", "#231216", "#321a20", "#ffeef0", "#b58d92", "#b3122e", "#e0718a")
 };
 
 export const THEME_OPTIONS = [
