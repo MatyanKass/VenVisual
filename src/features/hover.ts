@@ -89,7 +89,10 @@ ${S.channelSelected}, ${S.dmSelected} { animation: vv-sel-pulse 2.4s ease-in-out
     },
     {
         id: "selectedServerGlow", cat: "hover", group: "Открытый чат", kind: "toggle", label: "Свечение выбранного сервера", default: true,
-        css: on => on && `${S.guildItem}:has(> [class*="wrapper_"] > [class*="selected_"], > span > [class*="selected_"]) ${S.guildIconTail} { filter: drop-shadow(0 0 6px ${mixAccent(70)}); }`
+        // Discord puts `selected_` on the icon wrapper itself. Asking for it with :has() instead
+        // (the guild item that contains a selected pill) made every style recalc in the whole
+        // client ~40ms more expensive, which is what made hovering and scrolling stutter.
+        css: on => on && `${S.guilds} [class*="listItemWrapper_"][class*="selected_"] { filter: drop-shadow(0 0 6px ${mixAccent(70)}); }`
     },
     {
         id: "serverPillAccent", cat: "hover", group: "Открытый чат", kind: "toggle", label: "Полоска у сервера цветом акцента", default: true,
