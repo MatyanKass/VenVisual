@@ -86,7 +86,7 @@ ${S.mentioned}::after { content: ""; position: absolute; inset: 0; pointer-event
     { id: "msgLineHeight", cat: "messages", group: "Текст", kind: "slider", label: "Межстрочный интервал", default: 138, min: 100, max: 200, unit: "%", css: val => val !== 138 && `${S.messageContent} { line-height: ${val / 100} !important; }` },
     { id: "msgLetterSpacing", cat: "messages", group: "Текст", kind: "slider", label: "Расстояние между буквами", default: 0, min: -1, max: 3, step: 0.1, unit: " px", css: val => val !== 0 && `${S.messageContent} { letter-spacing: ${val}px; }` },
     { id: "msgSpacing", cat: "messages", group: "Текст", kind: "slider", label: "Отступ между группами сообщений", default: 16, min: 0, max: 40, unit: " px", css: val => val !== 16 && `${S.messageGroupStart} { margin-top: ${val}px !important; }` },
-    toggle("msgTextGlow", "Текст", "Лёгкое свечение текста", false, `${S.messageContent} { text-shadow: 0 0 6px ${mixAccent(35)}; }`, "Тень у всего текста чата: заметно дороже при прокрутке", true),
+    toggle("msgTextGlow", "Текст", "Лёгкое свечение текста", false, `${S.messageContent} { text-shadow: 0 0 4px ${mixAccent(35)}; }`, "Тень у всего текста чата: заметно дороже при прокрутке", true),
     toggle("timestampsAlways", "Текст", "Время у каждого сообщения всегда видно", false, `${S.timestampHover} { opacity: 1 !important; }`),
     toggle("timestampAccent", "Текст", "Время цветом акцента", false, `${S.timestamp}, ${S.timestamp} time { color: ${mixAccent(80)} !important; }`),
     toggle("editedAccent", "Текст", "Метка «изменено» цветом акцента", false, `${S.edited} { color: ${ACCENT2} !important; font-style: italic; }`),

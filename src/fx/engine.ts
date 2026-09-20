@@ -95,8 +95,10 @@ const DIRTY_LIMIT = 0.35;
 /** that many live ambient particles count as "full screen" */
 const FULL_PARTICLES = 150;
 
-const AUTO_FPS = [60, 45, 30];
-const AUTO_SCALE = [1, 0.85, 0.7];
+// Auto mode stays conservative on purpose: dropping to 30 fps looks choppier than it saves, and
+// changing the resolution reallocates the backing store, which is a visible hitch every time.
+const AUTO_FPS = [60, 48];
+const AUTO_SCALE = [1, 1];
 /** minimum delay between two quality steps (ms) */
 const STEP_COOLDOWN = 2000;
 /** accent colors are rounded to this many units before they invalidate sprite / palette caches */
@@ -1152,13 +1154,14 @@ export class FxEngine {
      * (1 / 0.85 / 0.7) down while drawing is expensive or frames arrive late, and slowly back up when it is cheap.
      */
     private tune(now: number, target: number) {
-        const late = this.avgDraw > 4 || this.avgGap > target * 1.4;
+        const late = this.avgDraw > 6 || this.avgGap > target * 1.6;
         this.lateRun = late ? this.lateRun + 1 : 0;
         this.calmRun = !late && this.avgDraw < 2.2 && this.avgGap < target * 1.15 ? this.calmRun + 1 : 0;
         if (now - this.lastStep < STEP_COOLDOWN) return;
-        if (this.lateRun > 30 && this.level < AUTO_FPS.length - 1) {
+        // ~2s of consistently late frames before stepping down, ~10s of calm before stepping back up
+        if (this.lateRun > 120 && this.level < AUTO_FPS.length - 1) {
             this.level++;
-        } else if (this.calmRun > 300 && this.level > 0) {
+        } else if (this.calmRun > 600 && this.level > 0) {
             this.level--;
         } else {
             return;
@@ -1166,7 +1169,6 @@ export class FxEngine {
         this.lastStep = now;
         this.lateRun = 0;
         this.calmRun = 0;
-        if (this.quality === "auto") this.rescale();
     }
 
     /** Clears only the boxes the previous frame drew into, or everything when that got too expensive. */

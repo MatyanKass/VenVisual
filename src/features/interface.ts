@@ -190,7 +190,7 @@ ${S.menu}, ${S.layerContainer} ${S.dialog} { animation: vv-pop-in var(--vv-speed
     { id: "focusMode", cat: "interface", group: "Фокус", kind: "toggle", label: "Фокус-режим", desc: "Боковые панели полупрозрачные, пока на них не наведёшь", default: false },
     {
         id: "focusOpacity", cat: "interface", group: "Фокус", kind: "slider", label: "Прозрачность панелей в фокус-режиме", default: 35, min: 5, max: 90, unit: "%", dependsOn: "focusMode",
-        css: (o, v) => v.focusMode && `${S.sidebar}, ${S.membersWrap} { opacity: ${o / 100}; transition: opacity calc(var(--vv-speed) * 2) ease !important; }
+        css: (o, v) => v.focusMode && `${S.sidebar}, ${S.membersWrap} { opacity: ${o / 100}; transition: opacity calc(var(--vv-speed) * 2) ease !important; will-change: opacity; }
 ${S.sidebar}:hover, ${S.membersWrap}:hover, ${S.sidebar}:focus-within { opacity: 1; }`
     }
 ];
