@@ -11,6 +11,7 @@ import { showToast, Toasts, useEffect, useMemo, useRef, useState } from "@webpac
 import type { CSSProperties, JSX } from "react";
 
 import { DEFAULTS, diffFromDefaults, FEATURE_BY_ID, FEATURES, isOn, withDefaults } from "../features/index";
+import { asLang, categoryLabel, featureText, Lang, LANGS, optionLabel, placeholderText, presetText, searchText, ui, unitText } from "../i18n";
 import { PRESETS, randomValues } from "../presets";
 import { CATEGORIES, CategoryId, ColorFeature, Feature, normalizeHex, SelectFeature, SliderFeature, TextFeature, Values } from "../registry";
 import { getValues, resetAll, saveAll, saveValue } from "../settings";
@@ -30,24 +31,33 @@ const norm = (s: string) => s.toLowerCase().replace(/ё/g, "е");
 
 const CATEGORY_BY_ID = new Map(CATEGORIES.map(c => [c.id, c]));
 
-const HAYSTACK = new Map(FEATURES.map(f => [f.id, norm([
-    f.id,
-    f.label,
-    f.desc ?? "",
-    f.group ?? "",
+/**
+ * The panel renders in one language at a time and re-renders as a whole when it changes, so the
+ * current language lives in a module variable instead of being threaded through every component.
+ */
+let LANG: Lang = "ru";
+const T = () => ui(LANG);
+
+// searchable in both languages, whichever one is on screen
+const HAYSTACK = new Map(FEATURES.map(f => [f.id, norm(searchText(f, [
     CATEGORY_BY_ID.get(f.cat)?.label ?? "",
-    f.kind === "select" ? f.options.map(o => o.label).join(" ") : ""
-].join(" "))]));
+    categoryLabel(f.cat, "", "en")
+]))]));
 
 function groupFeatures(list: Feature[], withCategory: boolean): Section[] {
     const sections = new Map<string, Section>();
     for (const f of list) {
-        const group = f.group ?? "Прочее";
+        const group = featureText(f, LANG).group ?? T().groupOther;
         const key = withCategory ? `${f.cat}/${group}` : group;
         let section = sections.get(key);
         if (!section) {
             const cat = CATEGORY_BY_ID.get(f.cat);
-            section = { key, title: group, category: withCategory && cat ? `${cat.icon} ${cat.label}` : undefined, features: [] };
+            section = {
+                key,
+                title: group,
+                category: withCategory && cat ? `${cat.icon} ${categoryLabel(cat.id, cat.label, LANG)}` : undefined,
+                features: []
+            };
             sections.set(key, section);
         }
         section.features.push(f);
@@ -55,22 +65,23 @@ function groupFeatures(list: Feature[], withCategory: boolean): Section[] {
     return [...sections.values()];
 }
 
-const TAB_SECTIONS = new Map<CategoryId, Section[]>(
-    CATEGORIES.map(c => [c.id, groupFeatures(FEATURES.filter(f => f.cat === c.id), false)])
-);
+/** sections per tab, rebuilt once per language (group titles are translated) */
+const TAB_SECTIONS_BY_LANG = new Map<Lang, Map<CategoryId, Section[]>>();
+
+function tabSections(lang: Lang): Map<CategoryId, Section[]> {
+    let cached = TAB_SECTIONS_BY_LANG.get(lang);
+    if (!cached) {
+        cached = new Map(CATEGORIES.map(c => [c.id, groupFeatures(FEATURES.filter(f => f.cat === c.id), false)]));
+        TAB_SECTIONS_BY_LANG.set(lang, cached);
+    }
+    return cached;
+}
 
 const PRESET_DIFFS = PRESETS.map(p => diffFromDefaults(withDefaults(p.values)));
 
 function sameDiff(a: Values, b: Values): boolean {
     const keys = Object.keys(a);
     return keys.length === Object.keys(b).length && keys.every(k => a[k] === b[k]);
-}
-
-function plural(n: number, one: string, few: string, many: string): string {
-    const m10 = n % 10, m100 = n % 100;
-    if (m10 === 1 && m100 !== 11) return one;
-    if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-    return many;
 }
 
 const toastOk = (msg: string) => showToast(msg, Toasts.Type.SUCCESS);
@@ -127,7 +138,7 @@ function Slider({ f, value, onChange }: { f: SliderFeature; value: number; onCha
                 aria-label={f.label}
                 onChange={e => onChange(Number(e.currentTarget.value))}
             />
-            <span className="vv-slider-value">{value.toFixed(decimals)}{f.unit ?? ""}</span>
+            <span className="vv-slider-value">{value.toFixed(decimals)}{unitText(f.unit, LANG)}</span>
         </div>
     );
 }
@@ -161,7 +172,7 @@ function ColorPicker({ f, value, onChange }: { f: ColorFeature; value: string; o
 
     return (
         <div className="vv-color">
-            <label className={"vv-swatch" + (hex ? "" : " vv-swatch-empty")} title={hex || "Цвет из темы. Нажми, чтобы выбрать свой"}>
+            <label className={"vv-swatch" + (hex ? "" : " vv-swatch-empty")} title={hex || T().colorTitle}>
                 <input
                     type="color"
                     value={hex ?? "#000000"}
@@ -175,7 +186,7 @@ function ColorPicker({ f, value, onChange }: { f: ColorFeature; value: string; o
                 value={draft}
                 maxLength={7}
                 spellCheck={false}
-                placeholder={clearable ? "из темы" : "#rrggbb"}
+                placeholder={clearable ? T().colorFromTheme : T().colorHexPlaceholder}
                 onChange={e => {
                     const text = e.currentTarget.value;
                     setDraft(text);
@@ -188,7 +199,7 @@ function ColorPicker({ f, value, onChange }: { f: ColorFeature; value: string; o
                 }}
             />
             {clearable && value !== "" && (
-                <button type="button" className="vv-icon-btn" title="Убрать свой цвет (брать из темы)" onClick={() => onChange("")}>✕</button>
+                <button type="button" className="vv-icon-btn" title={T().colorClear} onClick={() => onChange("")}>✕</button>
             )}
         </div>
     );
@@ -198,7 +209,7 @@ function Select({ f, value, onChange }: { f: SelectFeature; value: string; onCha
     return (
         <div className="vv-select-wrap">
             <select className="vv-select" value={value} aria-label={f.label} onChange={e => onChange(e.currentTarget.value)}>
-                {f.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                {f.options.map(o => <option key={o.value} value={o.value}>{optionLabel(f.id, o.value, o.label, LANG)}</option>)}
             </select>
         </div>
     );
@@ -211,7 +222,7 @@ function TextInput({ f, value, onChange }: { f: TextFeature; value: string; onCh
                 className="vv-input vv-textarea"
                 rows={3}
                 value={value}
-                placeholder={f.placeholder}
+                placeholder={placeholderText(f.id, f.placeholder, LANG)}
                 spellCheck={false}
                 aria-label={f.label}
                 onChange={e => onChange(e.currentTarget.value)}
@@ -223,7 +234,7 @@ function TextInput({ f, value, onChange }: { f: TextFeature; value: string; onCh
             className="vv-input"
             type="text"
             value={value}
-            placeholder={f.placeholder}
+            placeholder={placeholderText(f.id, f.placeholder, LANG)}
             spellCheck={false}
             aria-label={f.label}
             onChange={e => onChange(e.currentTarget.value)}
@@ -246,6 +257,7 @@ function Control({ f, value, onChange }: { f: Feature; value: any; onChange: OnC
 function Row({ f, value, dimmed, onChange }: { f: Feature; value: any; dimmed: boolean; onChange: (id: string, value: any) => void; }) {
     const changed = value !== f.default;
     const parent = dimmed && f.dependsOn ? FEATURE_BY_ID.get(f.dependsOn) : undefined;
+    const text = featureText(f, LANG);
     const stacked = f.kind === "text" && f.multiline;
 
     const cls = ["vv-row", `vv-kind-${f.kind}`];
@@ -257,14 +269,14 @@ function Row({ f, value, dimmed, onChange }: { f: Feature; value: any; dimmed: b
         <div className={cls.join(" ")}>
             <div className="vv-row-text">
                 <div className="vv-row-label">
-                    <span>{f.label}</span>
-                    {f.heavy && <span className="vv-badge-heavy" title="Может нагружать слабый ПК">🐢</span>}
+                    <span>{text.label}</span>
+                    {f.heavy && <span className="vv-badge-heavy" title={T().heavyTitle}>🐢</span>}
                     {changed && (
-                        <button type="button" className="vv-reset-one" title="Вернуть значение по умолчанию" onClick={() => onChange(f.id, f.default)}>↺</button>
+                        <button type="button" className="vv-reset-one" title={T().resetOneTitle} onClick={() => onChange(f.id, f.default)}>↺</button>
                     )}
                 </div>
-                {f.desc && <div className="vv-row-desc">{f.desc}</div>}
-                {parent && <div className="vv-row-hint">Работает, когда включено «{parent.label}»</div>}
+                {text.desc && <div className="vv-row-desc">{text.desc}</div>}
+                {parent && <div className="vv-row-hint">{LANG === "en" ? `Works when “${featureText(parent, LANG).label}” is on` : `Работает, когда включено «${featureText(parent, LANG).label}»`}</div>}
             </div>
             <div className="vv-row-control">
                 <Control f={f} value={value} onChange={v => v !== value && onChange(f.id, v)} />
@@ -339,6 +351,8 @@ function speedUpPatch(v: Values): Values {
 
 export function Panel(): JSX.Element {
     const [values, setValues] = useState<Values>(() => getValues());
+    LANG = asLang(values.lang);
+    const t = T();
     const [tab, setTabState] = useState<CategoryId>(lastTab);
     const [query, setQuery] = useState("");
     const [importOpen, setImportOpen] = useState(false);
@@ -400,20 +414,15 @@ export function Panel(): JSX.Element {
         const patch = speedUpPatch(values);
         const changedIds = Object.keys(patch).filter(id => values[id] !== patch[id]);
         replaceAll({ ...values, ...patch });
-        showToast(
-            changedIds.length
-                ? `Ускорено: изменено ${changedIds.length} ${plural(changedIds.length, "настройка", "настройки", "настроек")}`
-                : "Всё уже настроено на быструю работу",
-            Toasts.Type.SUCCESS
-        );
+        showToast(changedIds.length ? t.speedUpDone(changedIds.length) : t.speedUpNothing, Toasts.Type.SUCCESS);
     };
 
     const onExport = () => {
         const json = JSON.stringify(diffFromDefaults(values), null, 2);
         Promise.resolve()
             .then(() => copyToClipboard(json))
-            .then(() => toastOk("Настройки скопированы"))
-            .catch(() => toastFail("Не удалось скопировать в буфер обмена"));
+            .then(() => toastOk(t.exportOk))
+            .catch(() => toastFail(t.exportFail));
     };
 
     const onImportApply = () => {
@@ -421,23 +430,23 @@ export function Panel(): JSX.Element {
         try {
             parsed = JSON.parse(importText);
         } catch {
-            toastFail("Это не похоже на JSON");
+            toastFail(t.importNotJson);
             return;
         }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            toastFail("Нужен JSON-объект с настройками");
+            toastFail(t.importNotObject);
             return;
         }
         const keys = Object.keys(parsed);
         const known = keys.filter(k => FEATURE_BY_ID.has(k)).length;
         if (keys.length && !known) {
-            toastFail("В этом JSON нет настроек VenVisual");
+            toastFail(t.importNoSettings);
             return;
         }
         replaceAll(parsed as Values);
         setImportOpen(false);
         setImportText("");
-        toastOk(`Импортировано: ${known} ${plural(known, "настройка", "настройки", "настроек")}`);
+        toastOk(t.importOk(known));
     };
 
     const onReset = () => {
@@ -451,13 +460,13 @@ export function Panel(): JSX.Element {
         setResetArmed(false);
         resetAll();
         setValues(getValues());
-        toastOk("Все настройки сброшены");
+        toastOk(t.resetOk);
     };
 
     /* ----- render ----- */
 
     const total = FEATURES.length;
-    const sections = search ? search.sections : TAB_SECTIONS.get(tab) ?? [];
+    const sections = search ? search.sections : tabSections(LANG).get(tab) ?? [];
 
     return (
         <div className="vv-panel">
@@ -465,22 +474,33 @@ export function Panel(): JSX.Element {
                 <div className="vv-hero-top">
                     <div className="vv-title-wrap">
                         <div className="vv-title">VenVisual</div>
-                        <div className="vv-subtitle">
-                            {total} {plural(total, "настройка", "настройки", "настроек")} · изменено {changed.total}
-                        </div>
+                        <div className="vv-subtitle">{t.subtitle(total, changed.total)}</div>
                     </div>
                     <div className="vv-actions">
-                        <button type="button" className="vv-btn" onClick={onSpeedUp} title="Убрать самые тяжёлые эффекты, не трогая цвета и темы">⚡ Ускорить</button>
-                        <button type="button" className="vv-btn vv-btn-primary" onClick={onRandom} title="Собрать случайный стиль из тем, фонов и эффектов">🎲 Случайный стиль</button>
-                        <button type="button" className="vv-btn" onClick={onExport} title="Скопировать изменённые настройки в буфер обмена">📤 Экспорт</button>
-                        <button type="button" className={"vv-btn" + (importOpen ? " vv-btn-active" : "")} onClick={() => setImportOpen(o => !o)} title="Вставить настройки из JSON">📥 Импорт</button>
+                        <div className="vv-lang" role="group" aria-label={t.language}>
+                            {LANGS.map(l => (
+                                <button
+                                    key={l.value}
+                                    type="button"
+                                    className={"vv-lang-btn" + (LANG === l.value ? " vv-active" : "")}
+                                    title={t.language}
+                                    onClick={() => setOne("lang", l.value)}
+                                >
+                                    {l.value.toUpperCase()}
+                                </button>
+                            ))}
+                        </div>
+                        <button type="button" className="vv-btn" onClick={onSpeedUp} title={t.speedUpTitle}>{t.speedUp}</button>
+                        <button type="button" className="vv-btn vv-btn-primary" onClick={onRandom} title={t.randomTitle}>{t.random}</button>
+                        <button type="button" className="vv-btn" onClick={onExport} title={t.exportTitle}>{t.exportBtn}</button>
+                        <button type="button" className={"vv-btn" + (importOpen ? " vv-btn-active" : "")} onClick={() => setImportOpen(o => !o)} title={t.importTitle}>{t.importBtn}</button>
                         <button
                             type="button"
                             className={"vv-btn vv-btn-danger" + (resetArmed ? " vv-btn-armed" : "")}
                             onClick={onReset}
-                            title="Вернуть все настройки к значениям по умолчанию"
+                            title={t.resetTitle}
                         >
-                            {resetArmed ? "Точно сбросить?" : "↺ Сбросить всё"}
+                            {resetArmed ? t.resetArmed : t.resetBtn}
                         </button>
                     </div>
                 </div>
@@ -496,9 +516,9 @@ export function Panel(): JSX.Element {
                             onChange={e => setImportText(e.currentTarget.value)}
                         />
                         <div className="vv-import-actions">
-                            <span className="vv-import-note">Все настройки заменятся на вставленные, остальные вернутся по умолчанию</span>
-                            <button type="button" className="vv-btn" onClick={() => setImportOpen(false)}>Отмена</button>
-                            <button type="button" className="vv-btn vv-btn-primary" disabled={!importText.trim()} onClick={onImportApply}>Применить</button>
+                            <span className="vv-import-note">{t.importNote}</span>
+                            <button type="button" className="vv-btn" onClick={() => setImportOpen(false)}>{t.importCancel}</button>
+                            <button type="button" className="vv-btn vv-btn-primary" disabled={!importText.trim()} onClick={onImportApply}>{t.importApply}</button>
                         </div>
                     </div>
                 )}
@@ -507,16 +527,17 @@ export function Panel(): JSX.Element {
                     {PRESETS.map(p => {
                         const pal = THEMES[p.values.theme];
                         const dot = pal ? { background: `linear-gradient(135deg, ${pal.accent}, ${pal.accent2})` } : undefined;
+                        const pt = presetText(p.id, { label: p.label, desc: p.desc }, LANG);
                         return (
                             <button
                                 key={p.id}
                                 type="button"
                                 className={"vv-preset" + (activePreset === p.id ? " vv-active" : "")}
-                                title={p.desc}
+                                title={pt.desc}
                                 onClick={() => replaceAll(p.values)}
                             >
                                 {dot && <span className="vv-preset-dot" style={dot} />}
-                                {p.label}
+                                {pt.label}
                             </button>
                         );
                     })}
@@ -530,7 +551,7 @@ export function Panel(): JSX.Element {
                         className="vv-input vv-search-input"
                         type="text"
                         value={query}
-                        placeholder="Поиск по настройкам…"
+                        placeholder={t.searchPlaceholder}
                         spellCheck={false}
                         onChange={e => setQuery(e.currentTarget.value)}
                         onKeyDown={e => {
@@ -541,15 +562,13 @@ export function Panel(): JSX.Element {
                         }}
                     />
                     {query && (
-                        <button type="button" className="vv-icon-btn vv-search-clear" title="Очистить поиск" onClick={() => setQuery("")}>✕</button>
+                        <button type="button" className="vv-icon-btn vv-search-clear" title={t.searchClear} onClick={() => setQuery("")}>✕</button>
                     )}
                 </div>
 
                 {search ? (
                     <div className="vv-search-info">
-                        {search.count
-                            ? `Найдено: ${search.count} ${plural(search.count, "настройка", "настройки", "настроек")}`
-                            : "Ничего не найдено"}
+                        {search.count ? t.searchFound(search.count) : t.searchNone}
                     </div>
                 ) : (
                     <div className="vv-tabs" role="tablist">
@@ -565,8 +584,8 @@ export function Panel(): JSX.Element {
                                     onClick={() => setTab(c.id)}
                                 >
                                     <span className="vv-tab-icon">{c.icon}</span>
-                                    <span>{c.label}</span>
-                                    {count > 0 && <span className="vv-tab-count" title={`Изменено: ${count}`}>{count}</span>}
+                                    <span>{categoryLabel(c.id, c.label, LANG)}</span>
+                                    {count > 0 && <span className="vv-tab-count" title={LANG === "en" ? `Changed: ${count}` : `Изменено: ${count}`}>{count}</span>}
                                 </button>
                             );
                         })}

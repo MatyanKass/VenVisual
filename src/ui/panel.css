@@ -859,3 +859,36 @@
     background: var(--background-surface-higher, var(--background-floating, #2b2d31));
     color: var(--text-default, var(--text-normal, #dbdee1));
 }
+
+/* ---------- language switch ---------- */
+
+.vv-lang {
+    display: inline-flex;
+    align-items: stretch;
+    border: 1px solid var(--border-subtle, rgb(255 255 255 / 10%));
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.vv-lang-btn {
+    padding: 0 10px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted, #949ba4);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    cursor: pointer;
+    transition: background-color .15s ease, color .15s ease;
+}
+
+.vv-lang-btn:hover {
+    background: var(--vv-panel-hover, rgb(255 255 255 / 6%));
+    color: var(--text-default, #dbdee1);
+}
+
+.vv-lang-btn.vv-active {
+    background: var(--vv-accent, #5865f2);
+    color: #fff;
+}

@@ -166,6 +166,10 @@ ${S.messagesWrapper}::before { content: '${t}'; position: absolute; inset: 0; di
     { id: "comicSans", cat: "extras", group: "Приколы", kind: "toggle", label: "Comic Sans везде", default: false, css: on => on && "* { font-family: 'Comic Sans MS', 'Comic Neue', cursive !important; }" },
 
     /* ---------- control ---------- */
+    {
+        id: "lang", cat: "extras", group: "Управление", kind: "select", label: "Язык настроек", desc: "Language of this settings panel",
+        default: "ru", options: [{ value: "ru", label: "Русский" }, { value: "en", label: "English" }]
+    },
     { id: "panicHotkey", cat: "extras", group: "Управление", kind: "toggle", label: "Ctrl+Alt+V: быстро выключить и включить все эффекты", default: true },
     {
         id: "pauseAnimUnfocused", cat: "extras", group: "Управление", kind: "toggle", default: true,
