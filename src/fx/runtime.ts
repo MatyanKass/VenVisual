@@ -11,7 +11,7 @@ import { isSeeThrough } from "../features/background";
 import { effectiveThemeId, resolvePalette } from "../features/theme";
 import { Values } from "../registry";
 import { BurstKind, FxConfig, FxEngine } from "./engine";
-import { configureKeywords } from "./keywords";
+import { configureKeywords, MessageTags } from "./keywords";
 import { configureWidgets, WidgetConfig } from "./widgets";
 
 interface RuntimeOpts {
@@ -187,11 +187,23 @@ function parseKeywords(list: unknown): string[] | null {
     return words.length ? words : null;
 }
 
-function setKeywords(words: string[] | null) {
-    const key = words ? JSON.stringify(words) : null;
+function setKeywords(cfg: MessageTags | null) {
+    const key = cfg ? JSON.stringify(cfg) : null;
     if (key === keywordsKey) return;
     keywordsKey = key;
-    safe("keywords", () => configureKeywords(words));
+    safe("keywords", () => configureKeywords(cfg));
+}
+
+/** which message marks the stylesheet currently needs; all of them are set as attributes, never matched with :has() */
+function messageTags(v: Values, pausedNow: boolean): MessageTags | null {
+    if (pausedNow) return null;
+    const cfg: MessageTags = {
+        words: (v.kwEnabled && parseKeywords(v.kwList)) || [],
+        links: !!v.linkMsgHighlight,
+        attachments: !!v.attachmentHighlight,
+        system: !!v.systemMsgDim
+    };
+    return cfg.words.length || cfg.links || cfg.attachments || cfg.system ? cfg : null;
 }
 
 /* ---------- rainbow accent ---------- */
@@ -458,7 +470,7 @@ export function updateRuntime(v: Values, pausedNow: boolean) {
     else disableRainbow();
 
     setParallax(!off && isSeeThrough(v) && !!v.parallax);
-    setKeywords(!pausedNow && v.kwEnabled ? parseKeywords(v.kwList) : null);
+    setKeywords(messageTags(v, pausedNow));
     // economy mode keeps the cheap clock / timer, only the FPS counter (its own animation frame loop) goes away
     setWidgets(pausedNow ? null : widgetConfig(v.perfMode ? { ...v, fpsCounter: false } : v));
     setEngine(off ? null : engineConfig(v));
@@ -497,10 +509,33 @@ export function stopRuntime() {
     opts = null;
 }
 
+/**
+ * The entry animation is scoped to `[data-vv-new]` so it runs only on messages that just arrived.
+ * Otherwise every message mounted while scrolling back through history animates as well, which
+ * makes scrolling far more expensive than it needs to be.
+ */
+function tagNewMessage(channelId: string, messageId: unknown) {
+    if (messageId == null) return;
+    const id = `chat-messages-${channelId}-${String(messageId)}`;
+    let tries = 0;
+    const attempt = () => {
+        const li = document.getElementById(id);
+        if (li) {
+            li.setAttribute("data-vv-new", "");
+            later(() => li.removeAttribute("data-vv-new"), 1500);
+        } else if (++tries < 4) {
+            later(attempt, 60);
+        }
+    };
+    attempt();
+}
+
 export function onMessageCreate(e: { channelId: string; message: any; optimistic?: boolean; }) {
     if (!opts || paused) return;
     const { message } = e;
     if (!message) return;
+
+    if (opts.getValues().msgAppear !== "off") tagNewMessage(e.channelId, message.id);
 
     const me: string | undefined = UserStore?.getCurrentUser()?.id;
     if (!me) return;
